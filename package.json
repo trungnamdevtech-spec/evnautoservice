@@ -21,7 +21,6 @@
     "parse:pdfs": "node --import tsx src/scripts/parse-all-pdfs.ts",
     "parse:pdfs:force": "node --import tsx src/scripts/parse-all-pdfs.ts --force",
     "api": "node --import tsx src/api/server.ts",
-    "validate:openapi": "npx --yes @apidevtools/swagger-cli@4 validate docs_autocheckenv/openapi.yaml",
     "postinstall": "node scripts/playwright-postinstall.cjs"
   },
   "dependencies": {
