@@ -1,0 +1,46 @@
+{
+  "name": "evn-scraper-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EVN invoice scraper worker — Playwright-extra, disposable contexts, MongoDB",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "node --import tsx src/index.ts",
+    "test:login": "node --import tsx src/scripts/test-login.ts",
+    "test:login:wrong": "node --import tsx src/scripts/test-login.ts --wrong",
+    "test:login:db": "node --import tsx src/scripts/test-failed-login-db.ts",
+    "seed:task": "node --import tsx src/scripts/seed-pending-task.ts",
+    "seed:task:demo": "node --import tsx src/scripts/seed-pending-task.ts --period=1 --month=03 --year=2026",
+    "test:e2e": "node --import tsx src/scripts/run-one-task.ts",
+    "test:wrong-captcha": "node --import tsx src/scripts/test-wrong-captcha.ts",
+    "parse:pdfs": "node --import tsx src/scripts/parse-all-pdfs.ts",
+    "parse:pdfs:force": "node --import tsx src/scripts/parse-all-pdfs.ts --force",
+    "api": "node --import tsx src/api/server.ts",
+    "validate:openapi": "npx --yes @apidevtools/swagger-cli@4 validate docs_autocheckenv/openapi.yaml",
+    "postinstall": "node scripts/playwright-postinstall.cjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "hono": "^4.12.9",
+    "mongodb": "^6.12.0",
+    "p-limit": "^6.2.0",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.49.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "@types/exceljs": "^0.5.3",
+    "@types/node": "^22.10.2",
+    "@types/pdf-parse": "^1.1.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

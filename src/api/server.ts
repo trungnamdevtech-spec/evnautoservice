@@ -1,0 +1,161 @@
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { logger } from "hono/logger";
+import { serve } from "@hono/node-server";
+import { billsRouter } from "./routes/billsRouter.js";
+import { exportRouter } from "./routes/exportRouter.js";
+import { statsRouter } from "./routes/statsRouter.js";
+import { healthRouter } from "./routes/healthRouter.js";
+import { tasksRouter } from "./routes/tasksRouter.js";
+import { env } from "../config/env.js";
+import { logger as appLogger } from "../core/logger.js";
+import {
+  API_CATALOG_OPERATIONS_COUNT,
+  API_CATALOG_VERSION,
+  API_CONSTRAINTS_DOC_VERSION,
+  API_DOCS_PATHS,
+  API_AUTH_HEADER,
+  API_SERVICE_VERSION,
+} from "./contract.js";
+
+const app = new Hono();
+
+// ── Middleware ────────────────────────────────────────────────────────────────
+app.use("*", cors());
+app.use("*", logger());
+
+/**
+ * G2/G3: JSON response dùng `application/json; charset=utf-8`.
+ * Thêm header phiên bản (đồng bộ catalog / ràng buộc gateway).
+ */
+app.use("*", async (c, next) => {
+  await next();
+  const res = c.res;
+  const ct = res.headers.get("content-type") ?? "";
+  const headers = new Headers(res.headers);
+  headers.set("X-API-Version", API_SERVICE_VERSION);
+  headers.set("X-Catalog-Version", API_CATALOG_VERSION);
+  headers.set("X-Constraints-Doc-Version", API_CONSTRAINTS_DOC_VERSION);
+  if (ct.startsWith("application/json") && !ct.toLowerCase().includes("charset")) {
+    headers.set("Content-Type", "application/json; charset=utf-8");
+  }
+  c.res = new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  });
+});
+
+/**
+ * API key auth: bật theo env.API_KEY_AUTH_ENABLED.
+ * Header bắt buộc: x-api-key: <API_KEY>
+ */
+app.use("*", async (c, next) => {
+  if (!env.apiKeyAuthEnabled) {
+    await next();
+    return;
+  }
+  // Cho phép preflight CORS đi qua
+  if (c.req.method === "OPTIONS") {
+    await next();
+    return;
+  }
+  const provided = c.req.header(API_AUTH_HEADER) ?? "";
+  if (provided !== env.apiKey) {
+    return c.json({ error: `Unauthorized: invalid or missing ${API_AUTH_HEADER}` }, 401);
+  }
+  await next();
+});
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+app.route("/api/tasks",   tasksRouter);
+app.route("/api/bills",   billsRouter);
+app.route("/api/export",  exportRouter);
+app.route("/api/stats",   statsRouter);
+app.route("/api/health",  healthRouter);
+
+// ── Root: API map (G5 — discovery; version đồng bộ contract.ts + catalog) ─────
+app.get("/", (c) =>
+  c.json({
+    service: "EVN AutoCheck API",
+    /** @deprecated Dùng serviceVersion — giữ để tương thích checklist / client cũ */
+    version: API_SERVICE_VERSION,
+    serviceVersion: API_SERVICE_VERSION,
+    catalogVersion: API_CATALOG_VERSION,
+    constraintsDocVersion: API_CONSTRAINTS_DOC_VERSION,
+    catalogOperationsCount: API_CATALOG_OPERATIONS_COUNT,
+    catalogReference: API_DOCS_PATHS,
+    endpoints: {
+      tasks: {
+        "POST /api/tasks":                                  "Tạo yêu cầu quét mới { ky, thang, nam } → worker tự xử lý",
+        "GET  /api/tasks":                                  "Danh sách tasks (?status=PENDING,RUNNING,SUCCESS,FAILED&limit=&skip=)",
+        "GET  /api/tasks/active":                           "Tasks đang PENDING + RUNNING",
+        "GET  /api/tasks/counts":                           "Đếm tasks theo trạng thái",
+        "GET  /api/tasks/:taskId":                          "Chi tiết 1 task + kết quả đầy đủ",
+        "POST /api/tasks/:taskId/cancel":                   "Hủy task PENDING",
+        "POST /api/tasks/:taskId/retry":                    "Tạo lại task từ FAILED",
+      },
+      bills: {
+        "GET /api/bills/customers":                        "Danh sách tất cả mã khách hàng",
+        "GET /api/bills/customer/:maKH":                   "Lịch sử hóa đơn của 1 KH (?ky=&thang=&nam=)",
+        "GET /api/bills/customer/:maKH/latest":            "Hóa đơn mới nhất của KH",
+        "GET /api/bills/customer/:maKH/due-soon?days=7":   "Hóa đơn KH sắp đến hạn",
+        "GET /api/bills/customer/:maKH/history":           "Lịch sử tiêu thụ (kWh + tiền) theo kỳ",
+        "GET /api/bills/period?ky=&thang=&nam=":           "Tất cả HĐ trong 1 kỳ",
+        "GET /api/bills/month?thang=&nam=":                "Tất cả HĐ trong 1 tháng (mọi kỳ)",
+        "GET /api/bills/due-soon?days=7":                  "Tất cả HĐ sắp đến hạn thanh toán",
+        "GET /api/bills/:invoiceId":                       "Tra theo invoiceId (ID_HDON)",
+      },
+      export: {
+        "GET /api/export/period?ky=&thang=&nam=":          "Xuất Excel danh sách HĐ 1 kỳ",
+        "GET /api/export/month?thang=&nam=":               "Xuất Excel toàn bộ HĐ 1 tháng",
+        "GET /api/export/customer/:maKH":                  "Xuất Excel lịch sử 1 KH (?ky=&thang=&nam=)",
+      },
+      stats: {
+        "GET /api/stats/month?nam=":                       "Tổng tiền/kWh từng tháng trong năm",
+        "GET /api/stats/period?ky=&thang=&nam=":           "Tổng hợp thống kê 1 kỳ",
+        "GET /api/stats/customer/:maKH/history":           "Lịch sử tiêu thụ theo kỳ của KH",
+      },
+      health: {
+        "GET /api/health":                                 "Tổng quan hệ thống",
+        "GET /api/health/db":                              "Trạng thái MongoDB + số documents",
+        "GET /api/health/data-integrity":                  "Cross-check invoice_items vs electricity_bills",
+      },
+    },
+  }),
+);
+
+// ── 404 fallback ──────────────────────────────────────────────────────────────
+app.notFound((c) =>
+  c.json({ error: "Endpoint không tồn tại. Xem danh sách API tại GET /" }, 404),
+);
+
+// ── Error handler ─────────────────────────────────────────────────────────────
+app.onError((err, c) => {
+  appLogger.error("[api] Lỗi không xử lý:", err.message);
+  return c.json({ error: "Lỗi server", detail: err.message }, 500);
+});
+
+// ── Start ────────────────────────────────────────────────────────────────────
+export function startApiServer(): void {
+  if (env.apiKeyAuthEnabled && env.apiKey.trim().length === 0) {
+    throw new Error(
+      "API key auth đang bật nhưng API_KEY chưa được cấu hình. " +
+        "Hãy set API_KEY hoặc tắt API_KEY_AUTH_ENABLED=false.",
+    );
+  }
+  serve({ fetch: app.fetch, port: env.apiPort }, (info) => {
+    appLogger.info(`[api] HTTP listening port ${info.port} (LOG_LEVEL=${env.logLevel})`);
+    appLogger.info(`[api] Discovery: GET http://localhost:${info.port}/`);
+  });
+}
+
+// Cho phép chạy standalone: node --import tsx src/api/server.ts
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith("server.ts") || process.argv[1].endsWith("server.js"))
+) {
+  import("../db/mongo.js").then(({ getMongoDb }) =>
+    getMongoDb().then(() => startApiServer()),
+  );
+}

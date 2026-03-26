@@ -1,0 +1,48 @@
+# Stack triển khai chuẩn: MongoDB + AutoCheck trong Docker, cùng network nội bộ.
+# App kết nối Mongo qua hostname service: mongodb://mongo:27017 (compose ghi đè .env).
+#
+# Chạy:  docker compose up -d --build
+# Log:   docker compose logs -f app
+#
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - evn_mongo_data:/data/db
+    networks:
+      - evn_internal
+    # Chỉ bind localhost: dev chạy `npm run dev` trên host vẫn dùng mongodb://127.0.0.1:27017
+    # App trong compose luôn dùng hostname `mongo` (không qua port publish).
+    ports:
+      - "127.0.0.1:27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  app:
+    build: .
+    image: autocheckevn:latest
+    restart: unless-stopped
+    ports:
+      - "1371:1371"
+    env_file: .env
+    environment:
+      # Luôn dùng Mongo trong compose — không phụ thuộc MONGODB_URI localhost trong .env
+      MONGODB_URI: mongodb://mongo:27017
+    volumes:
+      - ./output/pdfs:/app/output/pdfs
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - evn_internal
+
+networks:
+  evn_internal:
+
+volumes:
+  evn_mongo_data:

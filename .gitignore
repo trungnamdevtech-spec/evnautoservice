@@ -1,0 +1,42 @@
+# Dependencies & build
+node_modules/
+dist/
+
+# Secrets & môi trường local (chỉ đẩy .env.example)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Dữ liệu tải về / sinh ra khi chạy — không đưa lên GitHub
+output/
+
+# IDE / Cursor (máy local)
+.cursor/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# MCP descriptors local (Cursor project)
+mcps/
+
+# File tạm / script debug local
+tmp-*.mjs
+
+# Test / coverage
+coverage/
+playwright-report/
+test-results/
+
+# Tài liệu / hợp đồng API — không đưa lên remote (chỉ giữ local)
+docs_autocheckenv/
+TESTING.md
+
+# OS
+ehthumbs.db
+Desktop.ini
