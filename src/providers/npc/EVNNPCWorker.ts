@@ -13,6 +13,7 @@ import {
 import { isNpcLoginWrongCredentialsError } from "./npcLoginErrors.js";
 import { parseNpcAccountIdFromPayload } from "./npcTaskPayload.js";
 import { logTaskPhase, logger } from "../../core/logger.js";
+import { npcHumanPause } from "../../services/npc/npcBrowserLikeHeaders.js";
 import { fetchNpcTraCuuHdsPc } from "../../services/npc/NpcTraCuuHDSPCClient.js";
 import { parseNpcBillDataFromTraCuuBody } from "../../services/npc/parseNpcBillData.js";
 import { postNpcXemChiTietHoaDon } from "../../services/npc/NpcXemChiTietHoaDonClient.js";
@@ -21,14 +22,12 @@ import { ElectricityBillRepository } from "../../db/electricityBillRepository.js
 import { parseElectricityBillPdf } from "../../services/pdf/ElectricityBillParser.js";
 import { npcInvoiceIdSurrogateFromIdHdon } from "../../services/npc/npcElectricityBillId.js";
 
-const DEFAULT_STEP_MS = 60_000;
-
 export class EVNNPCWorker extends BaseWorker {
   private readonly npcRepo = new NpcAccountRepository();
   private readonly billRepo = new ElectricityBillRepository();
 
   async runTask(page: Page, task: ScrapeTask, traceTaskId: string): Promise<InvoiceDownloadMetadata> {
-    const step = DEFAULT_STEP_MS;
+    const step = env.npcStepTimeoutMs;
     const trace = (phase: string, detail?: string) => logTaskPhase(traceTaskId, phase, detail);
 
     const accountId = parseNpcAccountIdFromPayload(task.payload);
@@ -146,6 +145,7 @@ export class EVNNPCWorker extends BaseWorker {
     let parseFailed = 0;
 
     for (const ky of kyList) {
+      await npcHumanPause();
       const r = await this.runStep(`npc:traCuuHDSPC:ky${ky}`, step, () =>
         fetchNpcTraCuuHdsPc(page, { ky, thang: month, nam: year }),
       );
@@ -172,6 +172,7 @@ export class EVNNPCWorker extends BaseWorker {
         if (!idHdon) continue;
         const maKh = (bill.customer_code ?? account.username).trim();
         npcPdfAttempted++;
+        await npcHumanPause();
 
         const detail = await this.runStep(`npc:xemChiTiet:ky${ky}:${idHdon.slice(0, 12)}`, step, () =>
           postNpcXemChiTietHoaDon(page, {
@@ -247,6 +248,13 @@ export class EVNNPCWorker extends BaseWorker {
           pdfBytes,
         });
       }
+    }
+
+    if (traCuuResults.length > 0 && traCuuResults.every((t) => t.status >= 400)) {
+      const statuses = traCuuResults.map((t) => `ky${t.ky}=${t.status}`).join(", ");
+      throw new Error(
+        `NPC TraCuuHDSPC: mọi kỳ đều lỗi HTTP (${statuses}). Có thể WAF/403, IP máy chủ bị hạn chế, hoặc phiên không đủ quyền — thử WORKER_CONCURRENCY=1; chi tiết trong metadata traCuuHdsPc.`,
+      );
     }
 
     const downloadedAt = new Date().toISOString();

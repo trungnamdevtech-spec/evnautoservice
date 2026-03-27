@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import { env } from "../../config/env.js";
 import { logger } from "../../core/logger.js";
+import { buildNpcXhrHeaders } from "./npcBrowserLikeHeaders.js";
 
 /**
  * Tra cứu hóa đơn SPC trên CSKH NPC (sau khi đã có session + cookie trên `page`).
@@ -41,33 +42,60 @@ export function buildNpcTraCuuHdsPcUrl(params: NpcTraCuuHdsPcParams): string {
 /**
  * Gọi API bằng request context của Playwright — tự gửi cookie phiên (SessionId, antiforgery, …).
  */
+function shouldRetryTraCuuStatus(status: number): boolean {
+  return status === 403 || status === 429 || status === 502 || status === 503;
+}
+
+/**
+ * GET giống trình duyệt (không gửi Content-Type: application/json — một số WAF chặn GET lạ).
+ * Dùng `page.request` + header từ tab (Referer/UA/Sec-Fetch) để khớp phiên Chromium.
+ */
 export async function fetchNpcTraCuuHdsPc(
   page: Page,
   params: NpcTraCuuHdsPcParams,
 ): Promise<NpcTraCuuHdsPcResult> {
   const url = buildNpcTraCuuHdsPcUrl(params);
-  const referer = env.evnNpcIndexNpcUrl;
+  const refererFallback = env.evnNpcIndexNpcUrl;
+  const maxAttempts = 1 + env.npcTraCuuMaxRetries;
 
-  const res = await page.context().request.get(url, {
-    headers: {
-      Accept: "text/html, */*; q=0.01",
-      "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
-      "Content-Type": "application/json; charset=utf-8",
-      Referer: referer,
-      "X-Requested-With": "XMLHttpRequest",
-    },
-    timeout: 60_000,
-  });
+  let lastStatus = 0;
+  let lastText = "";
+  let lastStatusText = "";
 
-  const body = await res.text().catch(() => "");
-  logger.debug(
-    `[npc-tra-cuu] GET TraCuuHDSPC HTTP ${res.status()} ${res.statusText()} bytes=${body.length}`,
-  );
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const headers = await buildNpcXhrHeaders(page, refererFallback);
+    const res = await page.request.get(url, {
+      headers,
+      timeout: 60_000,
+    });
+
+    lastStatus = res.status();
+    lastStatusText = res.statusText();
+    lastText = await res.text().catch(() => "");
+
+    logger.debug(
+      `[npc-tra-cuu] GET TraCuuHDSPC attempt ${attempt}/${maxAttempts} HTTP ${lastStatus} ${lastStatusText} bytes=${lastText.length}`,
+    );
+
+    if (!shouldRetryTraCuuStatus(lastStatus) || attempt === maxAttempts) {
+      return {
+        url,
+        status: lastStatus,
+        statusText: lastStatusText,
+        body: lastText,
+      };
+    }
+
+    logger.warn(
+      `[npc-tra-cuu] TraCuuHDSPC HTTP ${lastStatus} — chờ ${env.npcTraCuuRetryDelayMs}ms rồi thử lại (${attempt}/${maxAttempts})`,
+    );
+    await new Promise((r) => setTimeout(r, env.npcTraCuuRetryDelayMs));
+  }
 
   return {
     url,
-    status: res.status(),
-    statusText: res.statusText(),
-    body,
+    status: lastStatus,
+    statusText: lastStatusText,
+    body: lastText,
   };
 }

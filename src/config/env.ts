@@ -113,4 +113,15 @@ export const env = {
    * Mặc định 5 — có thể giảm qua env khi test.
    */
   npcCaptchaMaxAttempts: Math.min(10, Math.max(1, parseIntSafe(process.env.NPC_CAPTCHA_MAX_ATTEMPTS, 5))),
+  /** Timeout mỗi bước Playwright NPC (goto, probe) — máy chủ mạng chậm nên tăng (ms). */
+  npcStepTimeoutMs: Math.max(15_000, parseIntSafe(process.env.NPC_STEP_TIMEOUT_MS, 90_000)),
+  /** GET TraCuuHDSPC: retry khi 403/429/502 (WAF tạm chặn). 0 = không retry. */
+  npcTraCuuMaxRetries: Math.min(5, Math.max(0, parseIntSafe(process.env.NPC_TRACUU_MAX_RETRIES, 2))),
+  npcTraCuuRetryDelayMs: Math.max(0, parseIntSafe(process.env.NPC_TRACUU_RETRY_DELAY_MS, 2500)),
+  /**
+   * NPC (chống bot): chờ ngẫu nhiên [min,max] ms giữa các bước TraCuu / XemChiTiet.
+   * Đặt cả hai = 0 để tắt (chỉ dùng khi test nhanh).
+   */
+  npcHumanJitterMinMs: Math.max(0, parseIntSafe(process.env.NPC_HUMAN_JITTER_MIN_MS, 120)),
+  npcHumanJitterMaxMs: Math.max(0, parseIntSafe(process.env.NPC_HUMAN_JITTER_MAX_MS, 500)),
 };

@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import { env } from "../../config/env.js";
 import { logger } from "../../core/logger.js";
+import { buildNpcXhrHeaders } from "./npcBrowserLikeHeaders.js";
 import { looksLikePdfBuffer, tryExtractPdfBufferFromTextPayload } from "./npcExtractPdfFromXemChiTiet.js";
 
 export interface NpcXemChiTietHoaDonParams {
@@ -39,7 +40,7 @@ export async function postNpcXemChiTietHoaDon(
 ): Promise<NpcXemChiTietHoaDonResult> {
   const base = env.evnNpcBaseUrl.replace(/\/$/, "");
   const url = `${base}/HoaDon/XemChiTietHoaDon_NPC`;
-  const referer = env.evnNpcIndexNpcUrl;
+  const refererFallback = env.evnNpcIndexNpcUrl;
   const origin = base;
 
   const ky = String(typeof params.ky === "number" ? params.ky : Number.parseInt(String(params.ky), 10));
@@ -48,13 +49,11 @@ export async function postNpcXemChiTietHoaDon(
   );
   const nam = String(typeof params.nam === "number" ? params.nam : Number.parseInt(String(params.nam), 10));
 
-  const res = await page.context().request.post(url, {
+  const xhr = await buildNpcXhrHeaders(page, refererFallback);
+  const res = await page.request.post(url, {
     headers: {
-      Accept: "*/*",
-      "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+      ...xhr,
       Origin: origin,
-      Referer: referer,
-      "X-Requested-With": "XMLHttpRequest",
     },
     form: {
       IDHoaDon: params.idHdon.trim(),
