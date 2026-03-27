@@ -5,6 +5,9 @@ import { normalizeStorageState } from "../core/BaseWorker.js";
 import type { TaskRepository } from "../db/taskRepository.js";
 import type { ScrapeTask } from "../types/task.js";
 import type { EVNCPCWorker } from "../providers/evn/EVNCPCWorker.js";
+import type { EVNNPCWorker } from "../providers/npc/EVNNPCWorker.js";
+import { NpcAccountRepository } from "../db/npcAccountRepository.js";
+import { parseNpcAccountIdFromPayload } from "../providers/npc/npcTaskPayload.js";
 import { InvoiceItemRepository } from "../db/invoiceItemRepository.js";
 import { ElectricityBillRepository } from "../db/electricityBillRepository.js";
 import { parseElectricityBillPdf } from "../services/pdf/ElectricityBillParser.js";
@@ -84,6 +87,78 @@ async function autoParseNewPdfs(
 /**
  * Một task = một BrowserContext dùng `storageState` + một Page; luôn đóng page rồi context.
  */
+export async function processNpcTask(
+  task: ScrapeTask,
+  repo: TaskRepository,
+  npcWorker: EVNNPCWorker,
+): Promise<void> {
+  if (!task._id || task.provider !== "EVN_NPC") {
+    return;
+  }
+
+  const taskId = task._id;
+  const taskHex = taskId.toHexString();
+  const npcRepo = new NpcAccountRepository();
+  const accId = parseNpcAccountIdFromPayload(task.payload);
+  const account = await npcRepo.findById(accId);
+  if (!account) {
+    await repo.markFailed(taskId, "Tài khoản NPC không tồn tại");
+    return;
+  }
+  if (!account.enabled) {
+    await repo.markFailed(taskId, `Tài khoản NPC đã tắt: ${account.username}`);
+    return;
+  }
+  if (account.disabledReason === "wrong_password") {
+    await repo.markFailed(
+      taskId,
+      `Tài khoản đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`,
+    );
+    return;
+  }
+
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+  let browserSessionStarted = false;
+
+  try {
+    logTaskPhase(taskHex, "CLAIMED", `NPC — ${account.username}`);
+
+    await npcWorker.beginBrowserSession();
+    browserSessionStarted = true;
+    logTaskPhase(taskHex, "BROWSER", "đã mở phiên Chromium (NPC)");
+
+    const storage = normalizeStorageState(account.storageStateJson ?? undefined);
+    context = await npcWorker.createDisposableContext(storage);
+    page = await context.newPage();
+
+    const metadata = await npcWorker.runTask(page, task, taskHex);
+    await repo.markSuccess(taskId, metadata);
+    logTaskPhase(taskHex, "SUCCESS", `NPC đăng nhập + lưu session — ${account.username}`);
+  } catch (err) {
+    const msg = formatError(err);
+    await repo.markFailed(taskId, msg);
+    logTaskPhase(taskHex, "FAILED", msg.split("\n")[0]?.slice(0, 500) ?? "unknown error");
+  } finally {
+    if (page && env.playwrightPauseBeforeCloseMs > 0) {
+      logger.info(
+        `[playwright] Tạm dừng ${env.playwrightPauseBeforeCloseMs}ms trước khi đóng trang (PLAYWRIGHT_PAUSE_BEFORE_CLOSE_MS)...`,
+      );
+      await new Promise((r) => setTimeout(r, env.playwrightPauseBeforeCloseMs));
+    }
+    if (page) {
+      await page.close().catch(() => undefined);
+    }
+    if (context) {
+      await context.close().catch(() => undefined);
+    }
+    if (browserSessionStarted) {
+      await npcWorker.endBrowserSession();
+      logTaskPhase(taskHex, "BROWSER_CLOSED", "đã kết thúc phiên Chromium cho task NPC");
+    }
+  }
+}
+
 export async function processTask(
   task: ScrapeTask,
   repo: TaskRepository,
@@ -91,6 +166,9 @@ export async function processTask(
 ): Promise<void> {
   if (!task._id) {
     return;
+  }
+  if (task.provider === "EVN_NPC") {
+    throw new Error("EVN_NPC phải xử lý qua processNpcTask");
   }
 
   const taskId = task._id;
@@ -157,11 +235,16 @@ export async function processTask(
 export async function claimAndProcessNext(
   repo: TaskRepository,
   evnWorker: EVNCPCWorker,
+  npcWorker: EVNNPCWorker,
   workerInstanceId: string,
 ): Promise<boolean> {
   const task = await repo.claimNextPending(workerInstanceId);
   if (!task) return false;
-  await processTask(task, repo, evnWorker);
+  if (task.provider === "EVN_NPC") {
+    await processNpcTask(task, repo, npcWorker);
+  } else {
+    await processTask(task, repo, evnWorker);
+  }
   return true;
 }
 

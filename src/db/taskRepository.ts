@@ -31,7 +31,7 @@ export class TaskRepository {
     const c = await this.col();
     const now = new Date();
     const res = await c.findOneAndUpdate(
-      { status: "PENDING", provider: "EVN_CPC" },
+      { status: "PENDING", provider: { $in: ["EVN_CPC", "EVN_NPC"] } },
       { $set: { status: "RUNNING" as TaskStatus, workerId, updatedAt: now } },
       { sort: { createdAt: 1 }, returnDocument: "after" },
     );
@@ -116,6 +116,47 @@ export class TaskRepository {
       updatedAt: now,
     } as ScrapeTask);
     return res.insertedId;
+  }
+
+  /** Task quét NPC — payload cần `npcAccountId` + kỳ/tháng/năm */
+  async insertPendingNpc(payload: Record<string, unknown>): Promise<ObjectId> {
+    const c = await this.col();
+    const now = new Date();
+    const res = await c.insertOne({
+      status: "PENDING",
+      provider: "EVN_NPC",
+      payload,
+      createdAt: now,
+      updatedAt: now,
+    } as ScrapeTask);
+    return res.insertedId;
+  }
+
+  async findActiveNpcForPeriod(
+    npcAccountIdHex: string,
+    ky: string,
+    thang: string,
+    nam: string,
+  ): Promise<ScrapeTask | null> {
+    const c = await this.col();
+    return c.findOne({
+      status: { $in: ["PENDING", "RUNNING"] },
+      provider: "EVN_NPC",
+      $and: [
+        {
+          $or: [
+            { "payload.npcAccountId": npcAccountIdHex },
+            { "payload.accountId": npcAccountIdHex },
+          ],
+        },
+        {
+          $or: [
+            { "payload.period": ky, "payload.month": thang, "payload.year": nam },
+            { "payload.ky": ky, "payload.thang": thang, "payload.nam": nam },
+          ],
+        },
+      ],
+    });
   }
 
   // ── API query methods ────────────────────────────────────────────────────

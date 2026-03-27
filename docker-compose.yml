@@ -1,6 +1,10 @@
 # Stack triển khai chuẩn: MongoDB + AutoCheck trong Docker, cùng network nội bộ.
 # App kết nối Mongo qua hostname service: mongodb://mongo:27017 (compose ghi đè .env).
 #
+# Thu vien Node: luon dong goi trong image qua `npm ci` + package-lock.json (xem Dockerfile).
+# Sau khi doi package.json / package-lock.json: bat buoc rebuild image:
+#   docker compose build --no-cache app && docker compose up -d
+#
 # Chạy:  docker compose up -d --build
 # Log:   docker compose logs -f app
 #
@@ -12,12 +16,11 @@ services:
       - evn_mongo_data:/data/db
     networks:
       - evn_internal
-    # Chỉ bind localhost: dev chạy `npm run dev` trên host vẫn dùng mongodb://127.0.0.1:27017
-    # App trong compose luôn dùng hostname `mongo` (không qua port publish).
-    ports:
-      - "127.0.0.1:27017:27017"
+    # Không publish 27017 ra host — tránh xung đột khi máy chủ đã có Mongo/container khác.
+    # App nối mongo qua network nội bộ (mongodb://mongo:27017). Backup/mongosh: docker exec -it … mongosh
+    # Nếu cần mở ra host, dùng cổng khác, ví dụ: "127.0.0.1:27018:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: [ "CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok" ]
       interval: 5s
       timeout: 5s
       retries: 8
@@ -26,6 +29,9 @@ services:
   app:
     build: .
     image: autocheckevn:latest
+    # Bind mount từ host có thể không map quyền ghi cho pwuser trong image Playwright.
+    # Chạy root trong container để ghi được output/pdfs ổn định trên Docker Desktop.
+    user: "0:0"
     restart: unless-stopped
     ports:
       - "1371:1371"
@@ -33,8 +39,13 @@ services:
     environment:
       # Luôn dùng Mongo trong compose — không phụ thuộc MONGODB_URI localhost trong .env
       MONGODB_URI: mongodb://mongo:27017
+      # Compose chạy trong container không có màn hình, cần headless để tránh browser crash.
+      PLAYWRIGHT_HEADLESS: "true"
+    shm_size: "3gb" # cần tăng size để tránh memory crash khi có nhiều task cùng lúc.
     volumes:
       - ./output/pdfs:/app/output/pdfs
+      # File Excel tài khoản NPC (username / password) — map từ host; đường dẫn mặc định ./data/npc-accounts.xlsx
+      - ./data:/app/data
     depends_on:
       mongo:
         condition: service_healthy
@@ -43,6 +54,7 @@ services:
 
 networks:
   evn_internal:
+
 
 volumes:
   evn_mongo_data:

@@ -22,6 +22,38 @@ const PDF_API_URL = `${env.evnCpcApiBaseUrl}/remote/invoice/file/pdf`;
 
 /** Magic bytes của PDF — dùng để xác thực dữ liệu trước khi lưu */
 const PDF_MAGIC = Buffer.from("%PDF-");
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Rate limiter kiểu fixed-window đơn giản (process-local).
+ * Mục tiêu: giữ tốc độ gọi API PDF thấp hơn quota CPC để tránh 429 hàng loạt.
+ */
+class FixedWindowRateLimiter {
+  private windowStartedAt = 0;
+  private used = 0;
+
+  constructor(
+    private readonly maxPerWindow: number,
+    private readonly windowMs = 60_000,
+  ) {}
+
+  async acquire(): Promise<void> {
+    while (true) {
+      const now = Date.now();
+      if (this.windowStartedAt === 0 || now - this.windowStartedAt >= this.windowMs) {
+        this.windowStartedAt = now;
+        this.used = 0;
+      }
+      if (this.used < this.maxPerWindow) {
+        this.used++;
+        return;
+      }
+      const waitMs = Math.max(100, this.windowMs - (now - this.windowStartedAt) + 50);
+      logger.warn(`[pdf] Chạm ngưỡng ${this.maxPerWindow}/${Math.round(this.windowMs / 1000)}s, chờ ${waitMs}ms`);
+      await sleep(waitMs);
+    }
+  }
+}
 
 /**
  * Gọi API CPC để tải file PDF (thông báo TBAO hoặc hóa đơn HDON).
@@ -29,6 +61,10 @@ const PDF_MAGIC = Buffer.from("%PDF-");
  * API yêu cầu Bearer token lấy từ phiên đăng nhập hiện tại.
  */
 export class EvnCpcPdfClient {
+  private static readonly limiter = new FixedWindowRateLimiter(
+    Math.max(1, Math.min(100, env.evnCpcPdfMaxPerMinute)),
+  );
+
   constructor(private readonly bearerToken: string) {}
 
   /**
@@ -36,6 +72,31 @@ export class EvnCpcPdfClient {
    * Trả về đường dẫn file và kích thước byte.
    */
   async downloadAndSave(params: PdfDownloadParams): Promise<PdfDownloadResult> {
+    const maxRetries = Math.max(0, env.evnCpcPdf429MaxRetries);
+    const baseDelay = Math.max(200, env.evnCpcPdf429BaseDelayMs);
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await EvnCpcPdfClient.limiter.acquire();
+        return await this.downloadOnce(params);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const isRateLimit = /HTTP\s*429\b|quota exceeded|too many requests/i.test(message);
+        if (!isRateLimit || attempt >= maxRetries) {
+          throw err;
+        }
+        const jitter = Math.floor(Math.random() * 500);
+        const delayMs = Math.min(60_000, baseDelay * 2 ** attempt + jitter);
+        logger.warn(
+          `[pdf] 429 rate limit billId=${params.billId} attempt=${attempt + 1}/${maxRetries + 1}, retry sau ${delayMs}ms`,
+        );
+        await sleep(delayMs);
+      }
+    }
+    throw new Error("PDF download retry loop exited unexpectedly");
+  }
+
+  private async downloadOnce(params: PdfDownloadParams): Promise<PdfDownloadResult> {
     const { orgCode, billId, fileType, customerCode } = params;
 
     logger.debug(

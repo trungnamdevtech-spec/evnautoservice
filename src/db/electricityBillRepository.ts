@@ -1,6 +1,6 @@
 import type { Collection, Filter, Sort } from "mongodb";
 import { getMongoDb } from "./mongo.js";
-import type { ElectricityBill } from "../types/electricityBill.js";
+import type { ElectricityBill, ElectricityProvider } from "../types/electricityBill.js";
 import { PARSER_VERSION } from "../services/pdf/ElectricityBillParser.js";
 
 const COLLECTION = "electricity_bills";
@@ -8,6 +8,8 @@ const COLLECTION = "electricity_bills";
 export interface BillQueryOptions {
   maKhachHang?: string;
   maDonViQuanLy?: string;
+  /** Lọc theo nguồn — bỏ qua để lấy cả CPC + NPC */
+  provider?: ElectricityProvider;
   ky?: 1 | 2 | 3;
   thang?: number;
   nam?: number;
@@ -29,7 +31,22 @@ export class ElectricityBillRepository {
         const db = await getMongoDb();
         const c = db.collection<ElectricityBill>(COLLECTION);
         // Unique: một hóa đơn chỉ có một bản ghi parsed
-        await c.createIndex({ invoiceId: 1 }, { unique: true, background: true }).catch(() => undefined);
+        // CPC (và bản ghi cũ không có provider): invoiceId vẫn unique. NPC dùng billKey / npcIdHdon — không ép unique invoiceId.
+        await c
+          .createIndex(
+            { invoiceId: 1 },
+            {
+              unique: true,
+              partialFilterExpression: {
+                $or: [{ provider: "EVN_CPC" }, { provider: { $exists: false } }],
+              },
+              background: true,
+            },
+          )
+          .catch(() => undefined);
+        await c.createIndex({ billKey: 1 }, { unique: true, sparse: true, background: true }).catch(() => undefined);
+        await c.createIndex({ npcIdHdon: 1 }, { sparse: true, background: true }).catch(() => undefined);
+        await c.createIndex({ provider: 1 }, { background: true }).catch(() => undefined);
         // Query theo khách hàng + kỳ
         await c.createIndex(
           { maKhachHang: 1, "kyBill.ky": 1, "kyBill.thang": 1, "kyBill.nam": 1 },
@@ -49,15 +66,30 @@ export class ElectricityBillRepository {
 
   /**
    * Upsert một hóa đơn đã parse.
-   * Nếu `invoiceId` đã tồn tại → cập nhật (re-parse).
-   * Trả về true nếu là bản ghi mới (insert), false nếu cập nhật.
+   *
+   * **Trùng lặp / idempotency**
+   * - CPC: khóa theo `invoiceId` (ID_HDON) hoặc `billKey: cpc:<id>`.
+   * - NPC: khóa theo `billKey: npc:<id_hdon>` hoặc `npcIdHdon` — cùng một hóa đơn không tạo hai bản ghi;
+   *   parse lại chỉ ghi đè bản hiện có (cùng parseVersion khi batch bỏ qua nhờ `findPendingNpcParse`).
    */
   async upsert(bill: ElectricityBill): Promise<{ isNew: boolean }> {
     const c = await this.col();
     const now = new Date();
     const { _id, createdAt, ...rest } = bill;
+    const filter =
+      bill.billKey != null && bill.billKey.length > 0
+        ? { billKey: bill.billKey }
+        : bill.npcIdHdon != null && bill.npcIdHdon.length > 0
+          ? { npcIdHdon: bill.npcIdHdon }
+          : {
+              invoiceId: bill.invoiceId,
+              $or: [
+                { provider: { $ne: "EVN_NPC" as const } },
+                { provider: { $exists: false } },
+              ],
+            };
     const result = await c.updateOne(
-      { invoiceId: bill.invoiceId },
+      filter,
       {
         $set: { ...rest, updatedAt: now },
         $setOnInsert: { createdAt: createdAt ?? now },
@@ -93,10 +125,77 @@ export class ElectricityBillRepository {
     );
   }
 
-  /** Tìm một hóa đơn theo invoiceId */
+  /** Đánh dấu parse lỗi cho một bản ghi NPC (theo id_hdon). */
+  async markNpcError(npcIdHdon: string, invoiceId: number, pdfPath: string, error: string): Promise<void> {
+    const c = await this.col();
+    const now = new Date();
+    const billKey = `npc:${npcIdHdon}`;
+    await c.updateOne(
+      { $or: [{ billKey }, { npcIdHdon }] },
+      {
+        $set: {
+          billKey,
+          npcIdHdon,
+          provider: "EVN_NPC" as const,
+          invoiceId,
+          pdfPath,
+          status: "error",
+          parseError: error.slice(0, 1000),
+          parseVersion: PARSER_VERSION,
+          parsedAt: now,
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now },
+      },
+      { upsert: true },
+    );
+  }
+
+  /** Tìm một hóa đơn theo invoiceId (CPC — ID_HDON). */
   async findById(invoiceId: number): Promise<ElectricityBill | null> {
     const c = await this.col();
-    return c.findOne({ invoiceId });
+    return c.findOne({
+      $or: [
+        { billKey: `cpc:${invoiceId}` },
+        {
+          invoiceId,
+          $or: [
+            { provider: { $ne: "EVN_NPC" as const } },
+            { provider: { $exists: false } },
+          ],
+        },
+      ],
+    });
+  }
+
+  /** Tra cứu bản ghi đã parse theo id_hdon NPC */
+  async findByNpcIdHdon(idHdon: string): Promise<ElectricityBill | null> {
+    const c = await this.col();
+    return c.findOne({ $or: [{ npcIdHdon: idHdon }, { billKey: `npc:${idHdon}` }] });
+  }
+
+  /**
+   * Hóa đơn NPC đã parse cho đúng một KH + kỳ/tháng/năm (một bản mới nhất nếu có trùng).
+   * Dùng API agent: có sẵn trong DB hay cần quét.
+   */
+  async findNpcParsedByCustomerPeriod(
+    maKhachHang: string,
+    ky: 1 | 2 | 3,
+    thang: number,
+    nam: number,
+  ): Promise<ElectricityBill | null> {
+    const c = await this.col();
+    return c.findOne(
+      {
+        provider: "EVN_NPC",
+        maKhachHang: maKhachHang.toUpperCase(),
+        status: "parsed",
+        "kyBill.ky": ky,
+        "kyBill.thang": thang,
+        "kyBill.nam": nam,
+      },
+      { sort: { parsedAt: -1, updatedAt: -1 } },
+    );
   }
 
   /**
@@ -109,6 +208,7 @@ export class ElectricityBillRepository {
 
     if (opts.maKhachHang) filter.maKhachHang = opts.maKhachHang;
     if (opts.maDonViQuanLy) filter.maDonViQuanLy = opts.maDonViQuanLy;
+    if (opts.provider) filter.provider = opts.provider;
     if (opts.ky !== undefined) filter["kyBill.ky"] = opts.ky;
     if (opts.thang !== undefined) filter["kyBill.thang"] = opts.thang;
     if (opts.nam !== undefined) filter["kyBill.nam"] = opts.nam;
@@ -143,6 +243,26 @@ export class ElectricityBillRepository {
     const parsedSet = new Set(parsed.map((d) => d.invoiceId));
     // Trả về những ID chưa có hoặc bị lỗi hoặc cần re-parse
     return new Set(invoiceIds.filter((id) => !parsedSet.has(id)));
+  }
+
+  /** id_hdon NPC chưa parse hoặc cần re-parse (version cũ / lỗi). */
+  async findPendingNpcParse(idHdons: string[]): Promise<Set<string>> {
+    if (idHdons.length === 0) return new Set(idHdons);
+    const c = await this.col();
+    const parsed = await c
+      .find(
+        {
+          npcIdHdon: { $in: idHdons },
+          status: "parsed",
+          parseVersion: PARSER_VERSION,
+        },
+        { projection: { npcIdHdon: 1 } },
+      )
+      .toArray();
+    const done = new Set(
+      parsed.map((d) => d.npcIdHdon).filter((x): x is string => typeof x === "string" && x.length > 0),
+    );
+    return new Set(idHdons.filter((id) => !done.has(id)));
   }
 
   /** Thống kê tổng tiền theo tháng/năm — dùng cho dashboard / reporting API */

@@ -38,10 +38,13 @@ export interface ScrapeTask {
   _id?: ObjectId;
   status: TaskStatus;
   workerId?: string;
-  provider: "EVN_CPC";
+  provider: "EVN_CPC" | "EVN_NPC";
   /** JSON string hoặc object — session/cookie cho storageState */
   sessionData?: string | Record<string, unknown>;
-  /** period/ky, month/thang, year/nam — tra cứu hóa đơn CPC; mặc định kỳ 1 + tháng/năm hiện tại */
+  /**
+   * CPC: period/ky, month/thang, year/nam.
+   * NPC: thêm tuỳ chọn kyList | npcKyList | periods — mảng kỳ trong tháng (vd. [1,2,3]); mặc định một kỳ từ period/ky.
+   */
   payload: Record<string, unknown>;
   errorMessage?: string;
   resultMetadata?: InvoiceDownloadMetadata;

@@ -3,37 +3,10 @@ import { ObjectId } from "mongodb";
 import { TaskRepository } from "../../db/taskRepository.js";
 import { logger } from "../../core/logger.js";
 import type { TaskStatus } from "../../types/task.js";
+import { validateKyThangNam } from "../../validation/kyThangNam.js";
 
 const repo = new TaskRepository();
 export const tasksRouter = new Hono();
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/** Validate ky (1|2|3), thang (1-12), nam (>=2020) */
-function validatePeriod(ky: unknown, thang: unknown, nam: unknown):
-  | { ok: true; ky: string; thang: string; nam: string }
-  | { ok: false; error: string } {
-  const kyN = Number(ky);
-  const thangN = Number(thang);
-  const namN = Number(nam);
-
-  if (!Number.isInteger(kyN) || kyN < 1 || kyN > 3) {
-    return { ok: false, error: "ky phải là 1, 2 hoặc 3" };
-  }
-  if (!Number.isInteger(thangN) || thangN < 1 || thangN > 12) {
-    return { ok: false, error: "thang phải từ 1 đến 12" };
-  }
-  if (!Number.isInteger(namN) || namN < 2020 || namN > 2100) {
-    return { ok: false, error: "nam phải từ 2020 đến 2100" };
-  }
-
-  return {
-    ok: true,
-    ky: String(kyN),
-    thang: String(thangN).padStart(2, "0"),
-    nam: String(namN),
-  };
-}
 
 function parseObjectId(id: string): ObjectId | null {
   try {
@@ -61,10 +34,10 @@ tasksRouter.post("/", async (c) => {
     return c.json({ error: "Body phải là JSON hợp lệ: { ky, thang, nam }" }, 400);
   }
 
-  const valid = validatePeriod(body.ky, body.thang, body.nam);
-  if (!valid.ok) return c.json({ error: valid.error }, 400);
+  const valid = validateKyThangNam(body.ky, body.thang, body.nam);
+  if (!valid.ok) return c.json({ error: valid.error, code: valid.code }, 400);
 
-  const { ky, thang, nam } = valid;
+  const { ky, thang, nam } = valid.value;
 
   // Kiểm tra trùng: đã có task PENDING/RUNNING cho cùng kỳ chưa?
   const existing = await repo.findActiveForPeriod(ky, thang, nam);

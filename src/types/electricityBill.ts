@@ -36,11 +36,24 @@ export interface ThreeFrames<T> {
  *   - maDonViQuanLy
  *   - status
  */
+/** Nguồn dữ liệu: CPC (API + PDF) hoặc NPC (TraCuu + PDF base64). */
+export type ElectricityProvider = "EVN_CPC" | "EVN_NPC";
+
 export interface ElectricityBill {
   _id?: ObjectId;
 
+  /**
+   * Khóa upsert ổn định: `cpc:<ID_HDON>` hoặc `npc:<id_hdon>`.
+   * Bắt buộc với bản ghi mới; bản cũ có thể chưa có (repository fallback theo invoiceId).
+   */
+  billKey?: string;
+  /** Mặc định coi như CPC nếu thiếu (dữ liệu cũ). */
+  provider?: ElectricityProvider;
+  /** Chỉ NPC: id_hdon từ TraCuuHDSPC / XemChiTiet */
+  npcIdHdon?: string;
+
   // ── Liên kết với invoice_items ─────────────────────────────────────────────
-  /** ID hóa đơn — khóa duy nhất, bằng ID_HDON trong invoice_items */
+  /** ID hóa đơn — CPC: ID_HDON; NPC: surrogate (npcInvoiceIdSurrogateFromIdHdon) */
   invoiceId: number;
   /** Mã khách hàng (MA_KHANG) */
   maKhachHang: string;

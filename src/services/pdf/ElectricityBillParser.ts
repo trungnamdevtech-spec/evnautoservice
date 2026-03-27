@@ -1,9 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { PDFParse } from "pdf-parse";
-import type { ElectricityBill, MeterReading, ParseResult, TimeFramePricing } from "../../types/electricityBill.js";
+import type {
+  ElectricityBill,
+  ElectricityProvider,
+  MeterReading,
+  ParseResult,
+  TimeFramePricing,
+} from "../../types/electricityBill.js";
 
-/** Version parser — tăng khi thay đổi logic để biết cần re-parse những file cũ */
-export const PARSER_VERSION = 1;
+/**
+ * Version parser — tăng khi thay đổi logic để biết cần re-parse những file cũ.
+ * v2: Hỗ trợ PDF CSKH NPC (miền Bắc) — cùng khung bố cục CPC nhưng khác biệt nhỏ (Kỳ hóa đơn có dấu "-",
+ * thứ tự dòng công tơ, serial trước "Khung giờ thấp điểm", Ngày ký có khoảng trắng, MST có "-").
+ * v3: NPC một số mẫu dùng `Kỳ hóa đơn: Tháng mm/yyyy (...)` (không có chữ "Kỳ n") — cần `npc.kyTrongKy` từ tên file/API.
+ */
+export const PARSER_VERSION = 3;
 
 /** Dùng pdf-parse v2: new PDFParse({ data, verbosity }) → getText() → .text */
 async function extractPdfText(buffer: Buffer): Promise<string> {
@@ -44,8 +55,15 @@ function parseVnDate(s: string): Date {
 // ─── Regex patterns ──────────────────────────────────────────────────────────
 
 const RE = {
-  // Kỳ hóa đơn: "Kỳ hóa đơn: Kỳ 1 3/2026 (15 ngày từ 01/03/2026 đến 15/03/2026 )"
-  kyHoaDon: /Kỳ hóa đơn:\s*Kỳ\s*(\d)\s+(\d{1,2})\/(\d{4})\s+\((\d+)\s*ngày\s+từ\s+(\d{2}\/\d{2}\/\d{4})\s+đến\s+(\d{2}\/\d{2}\/\d{4})/,
+  /**
+   * CPC: `Kỳ hóa đơn: Kỳ 3 1/2026 (11 ngày …)`
+   * NPC: `Kỳ hóa đơn: Kỳ 1 - 3/2026 (10 ngày …)` — có dấu "-" trước tháng/năm.
+   */
+  kyHoaDon:
+    /Kỳ hóa đơn:\s*Kỳ\s*(\d)\s*(?:-\s*)?(\d{1,2})\/(\d{4})\s+\((\d+)\s*ngày\s+từ\s+(\d{2}\/\d{2}\/\d{4})\s+đến\s+(\d{2}\/\d{2}\/\d{4})\s*\)/,
+  /** NPC: `Kỳ hóa đơn: Tháng 2/2026 (28 ngày từ …)` — không có "Kỳ 1|2|3" trong PDF */
+  kyHoaDonThang:
+    /Kỳ hóa đơn:\s*Tháng\s+(\d{1,2})\/(\d{4})\s+\((\d+)\s*ngày\s+từ\s+(\d{2}\/\d{2}\/\d{4})\s+đến\s+(\d{2}\/\d{2}\/\d{4})\s*\)/,
 
   // Khách hàng
   tenKhachHang: /Khách hàng\s+(.+?)(?:\n|Địa chỉ)/s,
@@ -58,14 +76,18 @@ const RE = {
   capDienAp: /Cấp điện áp sử dụng\s+(.+)/,
 
   // Đơn vị điện lực (4 dòng đầu trước "THÔNG BÁO TIỀN ĐIỆN")
-  mstDonVi: /MST:\s*([\d]+)/,
+  mstDonVi: /MST:\s*([\d\-]+)/,
   soTaiKhoan: /Số tài khoản:\s*([\d]+)\s+(.+?)(?:\n|$)/,
   dienThoaiDonVi: /^(19\d{6})\s*$/m,
-  ngayKy: /Ngày ký:\s*(\d{2}\/\d{2}\/\d{4})/,
+  // NPC: `Ngày ký: 12/ 03/ 2026 10:55:18` — cho phép khoảng trắng quanh /
+  ngayKy: /Ngày ký:\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})/,
   nguoiKy: /Được ký bởi:\s*(.+?)(?:\n|Ngày ký)/s,
 
-  // Công tơ
-  soHieuCongTo: /\n([\d]+)\n(?:Khung giờ bình thường)/,
+  /**
+   * Số công tơ: dòng chỉ gồm chữ số, ngay trước dòng đầu "Khung giờ …"
+   * (CPC thường là bình thường trước; NPC thường là thấp điểm trước — không ép thứ tự).
+   */
+  soHieuCongTo: /\n(\d{6,})\s*\r?\n\s*Khung giờ\s+/,
   heSoNhan: /Khung giờ bình thường\s+([\d]+)\s+/,
 
   // Chỉ số điện (heSoNhan, chiSoMoi, chiSoCu, tieuThu)
@@ -97,12 +119,21 @@ const RE = {
  * Trích xuất text từ file PDF và parse thành `ElectricityBill`.
  * Throw nếu không tìm thấy field bắt buộc.
  */
+export interface ParseElectricityBillPdfOptions {
+  /**
+   * Khi parse PDF từ CSKH NPC — gắn provider + billKey + npcIdHdon.
+   * `kyTrongKy` (1–3): bắt buộc khi PDF dùng dòng `Tháng mm/yyyy` thay vì `Kỳ n - mm/yyyy` — lấy từ tên file `_ky{n}_` hoặc API TraCuu.
+   */
+  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3 };
+}
+
 export async function parseElectricityBillPdf(
   pdfPath: string,
   invoiceId: number,
   maKhachHang: string,
   maDonViQuanLy: string,
   meta: { maSogcs: string; kyHieu: string; soSery: string; ngayPhatHanh: Date },
+  options?: ParseElectricityBillPdfOptions,
 ): Promise<ParseResult> {
   let rawText: string;
 
@@ -117,7 +148,15 @@ export async function parseElectricityBillPdf(
   }
 
   try {
-    const bill = extractFields(rawText, pdfPath, invoiceId, maKhachHang, maDonViQuanLy, meta);
+    const bill = extractFields(
+      rawText,
+      pdfPath,
+      invoiceId,
+      maKhachHang,
+      maDonViQuanLy,
+      meta,
+      options?.npc,
+    );
     return { success: true, bill };
   } catch (err) {
     return {
@@ -136,21 +175,42 @@ function extractFields(
   maKhachHang: string,
   maDonViQuanLy: string,
   meta: { maSogcs: string; kyHieu: string; soSery: string; ngayPhatHanh: Date },
+  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3 },
 ): ElectricityBill {
   const now = new Date();
+  const provider: ElectricityProvider = npc ? "EVN_NPC" : "EVN_CPC";
+  const billKey = npc ? `npc:${npc.npcIdHdon}` : `cpc:${invoiceId}`;
 
   // ── Kỳ hóa đơn ────────────────────────────────────────────────────────────
   const kyMatch = text.match(RE.kyHoaDon);
-  if (!kyMatch) throw new Error('Không tìm thấy "Kỳ hóa đơn" trong PDF');
-  const [, kyStr, thangStr, namStr, soDaysStr, ngayBDStr, ngayKTStr] = kyMatch;
-  const kyBill = {
-    ky: parseInt(kyStr!, 10) as 1 | 2 | 3,
-    thang: parseInt(thangStr!, 10),
-    nam: parseInt(namStr!, 10),
-    ngayBatDau: parseVnDate(ngayBDStr!),
-    ngayKetThuc: parseVnDate(ngayKTStr!),
-    soDays: parseInt(soDaysStr!, 10),
-  };
+  const kyThangMatch = text.match(RE.kyHoaDonThang);
+  let kyBill: { ky: 1 | 2 | 3; thang: number; nam: number; ngayBatDau: Date; ngayKetThuc: Date; soDays: number };
+
+  if (kyMatch) {
+    const [, kyStr, thangStr, namStr, soDaysStr, ngayBDStr, ngayKTStr] = kyMatch;
+    kyBill = {
+      ky: parseInt(kyStr!, 10) as 1 | 2 | 3,
+      thang: parseInt(thangStr!, 10),
+      nam: parseInt(namStr!, 10),
+      ngayBatDau: parseVnDate(ngayBDStr!),
+      ngayKetThuc: parseVnDate(ngayKTStr!),
+      soDays: parseInt(soDaysStr!, 10),
+    };
+  } else if (kyThangMatch) {
+    const [, thangStr, namStr, soDaysStr, ngayBDStr, ngayKTStr] = kyThangMatch;
+    const k = npc?.kyTrongKy ?? 1;
+    if (k < 1 || k > 3) throw new Error("kyTrongKy phải là 1, 2 hoặc 3 (NPC PDF dạng Tháng/mm/yyyy)");
+    kyBill = {
+      ky: k,
+      thang: parseInt(thangStr!, 10),
+      nam: parseInt(namStr!, 10),
+      ngayBatDau: parseVnDate(ngayBDStr!),
+      ngayKetThuc: parseVnDate(ngayKTStr!),
+      soDays: parseInt(soDaysStr!, 10),
+    };
+  } else {
+    throw new Error('Không tìm thấy "Kỳ hóa đơn" trong PDF');
+  }
 
   // ── Đơn vị điện lực ───────────────────────────────────────────────────────
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -243,12 +303,17 @@ function extractFields(
   const hanThanhToan = parseVnDate(hanTTStr);
 
   // ── Ký hóa đơn ───────────────────────────────────────────────────────────
-  const ngayKy = ngayKyMatch ? parseVnDate(ngayKyMatch[1]!) : meta.ngayPhatHanh;
+  const ngayKy = ngayKyMatch
+    ? parseVnDate(`${ngayKyMatch[1]}/${ngayKyMatch[2]}/${ngayKyMatch[3]}`)
+    : meta.ngayPhatHanh;
   const nguoiKy = nguoiKyMatch
     ? nguoiKyMatch[1]!.trim().replace(/\s+/g, " ")
     : donViDien.ten;
 
   return {
+    billKey,
+    provider,
+    npcIdHdon: npc?.npcIdHdon,
     invoiceId,
     maKhachHang,
     maDonViQuanLy,

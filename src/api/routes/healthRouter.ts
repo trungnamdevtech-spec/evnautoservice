@@ -55,16 +55,21 @@ healthRouter.get("/db", async (c) => {
 healthRouter.get("/data-integrity", async (c) => {
   const db = await getMongoDb();
 
-  const [invoiceIds, billIds] = await Promise.all([
+  const [invoiceIds, billIds, cpcBillIds] = await Promise.all([
     db.collection("invoice_items").distinct("ID_HDON") as Promise<number[]>,
     db.collection("electricity_bills").distinct("invoiceId") as Promise<number[]>,
+    db.collection("electricity_bills").distinct("invoiceId", {
+      $or: [{ provider: "EVN_CPC" }, { provider: { $exists: false } }],
+    }) as Promise<number[]>,
   ]);
 
   const invoiceSet = new Set(invoiceIds);
   const billSet = new Set(billIds);
 
   const hasPdfNotParsed = invoiceIds.filter((id) => !billSet.has(id));
-  const parsedOrphan    = billIds.filter((id) => !invoiceSet.has(id));
+  /** Chỉ CPC: bản ghi NPC không có trong invoice_items là bình thường */
+  const parsedOrphan = cpcBillIds.filter((id) => !invoiceSet.has(id));
+  const npcBillCount = await db.collection("electricity_bills").countDocuments({ provider: "EVN_NPC" });
 
   const errorBills = await db
     .collection("electricity_bills")
@@ -74,8 +79,9 @@ healthRouter.get("/data-integrity", async (c) => {
   return c.json({
     invoiceItemsTotal: invoiceIds.length,
     electricityBillsTotal: billIds.length,
+    electricityBillsNpc: npcBillCount,
     notYetParsed: { count: hasPdfNotParsed.length, invoiceIds: hasPdfNotParsed.slice(0, 50) },
-    orphanBills:  { count: parsedOrphan.length, invoiceIds: parsedOrphan.slice(0, 50) },
+    orphanBills:  { count: parsedOrphan.length, invoiceIds: parsedOrphan.slice(0, 50), note: "Chỉ so khớp CPC (invoice_items)" },
     parseErrors:  { count: errorBills.length, items: errorBills.slice(0, 20) },
   });
 });

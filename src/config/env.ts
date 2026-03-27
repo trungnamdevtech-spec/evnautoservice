@@ -48,6 +48,16 @@ export const env = {
   pdfOutputDir: process.env.PDF_OUTPUT_DIR ?? "./output/pdfs",
   /** Base URL API hóa đơn CPC */
   evnCpcApiBaseUrl: process.env.EVN_CPC_API_BASE_URL ?? "https://cskh-api.cpc.vn/api",
+  /** Giới hạn gọi API PDF mỗi phút (CPC quota ~100/min). Đặt thấp hơn để có headroom an toàn. */
+  evnCpcPdfMaxPerMinute: parseIntSafe(process.env.EVN_CPC_PDF_MAX_PER_MINUTE, 90),
+  /** Số lần retry tối đa khi API PDF trả 429 */
+  evnCpcPdf429MaxRetries: parseIntSafe(process.env.EVN_CPC_PDF_429_MAX_RETRIES, 6),
+  /** Delay backoff ban đầu (ms) khi gặp 429 */
+  evnCpcPdf429BaseDelayMs: parseIntSafe(process.env.EVN_CPC_PDF_429_BASE_DELAY_MS, 1500),
+  /** Số lượt quét retry PDF lỗi trong cùng task (sau lượt tải đầu). */
+  evnCpcPdfRetrySweeps: parseIntSafe(process.env.EVN_CPC_PDF_RETRY_SWEEPS, 1),
+  /** Thời gian chờ giữa các lượt quét retry PDF lỗi. */
+  evnCpcPdfRetrySweepDelayMs: parseIntSafe(process.env.EVN_CPC_PDF_RETRY_SWEEP_DELAY_MS, 30000),
   /** Port HTTP API server */
   apiPort: parseIntSafe(process.env.API_PORT, 1371),
   /** Base URL public để gateway gọi vào (qua domain/tunnel/proxy) */
@@ -67,4 +77,40 @@ export const env = {
   playwrightMobileMode: parseBoolSafe(process.env.PLAYWRIGHT_MOBILE_MODE, false),
   playwrightMobileViewportWidth: parseIntSafe(process.env.PLAYWRIGHT_MOBILE_WIDTH, 390),
   playwrightMobileViewportHeight: parseIntSafe(process.env.PLAYWRIGHT_MOBILE_HEIGHT, 844),
+
+  /** CSKH NPC — đăng nhập khách hàng (Mã KH) */
+  evnNpcLoginUrl:
+    process.env.EVN_NPC_LOGIN_URL ?? "https://cskh.npc.com.vn/home/AccountNPC",
+  /** Trang chủ sau đăng nhập — dùng thử session */
+  evnNpcHomeUrl: process.env.EVN_NPC_HOME_URL ?? "https://cskh.npc.com.vn/home",
+  /**
+   * Sau đăng nhập thành công (redirect về gốc site) — bước tiếp theo pipeline NPC.
+   * Mặc định: Dịch vụ TT CSKH NPC (index=2).
+   */
+  evnNpcIndexNpcUrl:
+    process.env.EVN_NPC_INDEX_NPC_URL ??
+    "https://cskh.npc.com.vn/DichVuTTCSKH/IndexNPC?index=2",
+  /** Origin CSKH NPC — dùng cho API same-origin sau đăng nhập */
+  evnNpcBaseUrl: process.env.EVN_NPC_BASE_URL ?? "https://cskh.npc.com.vn",
+  /**
+   * Bí mật dài (≥16 ký tự khuyến nghị) để mã hóa mật khẩu lưu trong npc_accounts.
+   * Bắt buộc khi gọi API thêm tài khoản NPC.
+   */
+  npcCredentialsSecret: process.env.NPC_CREDENTIALS_SECRET ?? "",
+  /**
+   * `true`: khi khởi động `node dist/index.js`, nếu tồn tại file `NPC_ACCOUNTS_XLSX_PATH` thì import vào `npc_accounts`
+   * (trùng username → skip). Cần `NPC_CREDENTIALS_SECRET`. Tắt mặc định — bật trên máy chủ sau khi đặt file Excel vào thư mục `data/`.
+   */
+  autoImportNpcXlsxOnStart: parseBoolSafe(process.env.AUTO_IMPORT_NPC_XLSX, false),
+  /** Đường dẫn file .xlsx (cột A=username, B=password), ví dụ `./data/npc-accounts.xlsx` */
+  npcAccountsXlsxPath: process.env.NPC_ACCOUNTS_XLSX_PATH ?? "./data/npc-accounts.xlsx",
+  /**
+   * `true`: in `[npc-login+timing]` / `[captcha+timing]` ra console (không phụ thuộc LOG_LEVEL) để tìm bước chậm.
+   */
+  npcLoginTraceTiming: parseBoolSafe(process.env.NPC_LOGIN_TRACE_TIMING, false),
+  /**
+   * Số lần thử tối đa khi NPC báo sai captcha (HTML SSR / màn đăng nhập).
+   * Mặc định 5 — có thể giảm qua env khi test.
+   */
+  npcCaptchaMaxAttempts: Math.min(10, Math.max(1, parseIntSafe(process.env.NPC_CAPTCHA_MAX_ATTEMPTS, 5))),
 };

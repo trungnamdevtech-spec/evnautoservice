@@ -92,7 +92,22 @@ billsRouter.get("/due-soon", async (c) => {
   return c.json({ dueSoonDays: days, total: bills.length, data: bills });
 });
 
-// ── GET /bills/:invoiceId — lấy theo invoiceId (fallback lookup) ─────────────
+// ── GET /bills/npc/:idHdon — electricity_bills nguồn NPC (id_hdon URL-encode) ─
+billsRouter.get("/npc/:idHdon", async (c) => {
+  let idHdon: string;
+  try {
+    idHdon = decodeURIComponent(c.req.param("idHdon"));
+  } catch {
+    return c.json({ error: "idHdon không hợp lệ" }, 400);
+  }
+  const bill = await repo.findByNpcIdHdon(idHdon);
+  if (!bill) {
+    return c.json({ error: `Không tìm thấy electricity_bills cho id_hdon` }, 404);
+  }
+  return c.json({ provider: "EVN_NPC", data: bill });
+});
+
+// ── GET /bills/:invoiceId — lấy theo invoiceId (CPC — ID_HDON) ───────────────
 billsRouter.get("/:invoiceId", async (c) => {
   const id = parseInt(c.req.param("invoiceId"), 10);
   if (isNaN(id)) return c.json({ error: "invoiceId phải là số nguyên" }, 400);

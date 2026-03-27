@@ -7,6 +7,8 @@ import { exportRouter } from "./routes/exportRouter.js";
 import { statsRouter } from "./routes/statsRouter.js";
 import { healthRouter } from "./routes/healthRouter.js";
 import { tasksRouter } from "./routes/tasksRouter.js";
+import { pdfRouter } from "./routes/pdfRouter.js";
+import { npcRouter } from "./routes/npcRouter.js";
 import { env } from "../config/env.js";
 import { logger as appLogger } from "../core/logger.js";
 import {
@@ -73,6 +75,8 @@ app.route("/api/bills",   billsRouter);
 app.route("/api/export",  exportRouter);
 app.route("/api/stats",   statsRouter);
 app.route("/api/health",  healthRouter);
+app.route("/api/pdf",     pdfRouter);
+app.route("/api/npc",     npcRouter);
 
 // ── Root: API map (G5 — discovery; version đồng bộ contract.ts + catalog) ─────
 app.get("/", (c) =>
@@ -104,7 +108,8 @@ app.get("/", (c) =>
         "GET /api/bills/period?ky=&thang=&nam=":           "Tất cả HĐ trong 1 kỳ",
         "GET /api/bills/month?thang=&nam=":                "Tất cả HĐ trong 1 tháng (mọi kỳ)",
         "GET /api/bills/due-soon?days=7":                  "Tất cả HĐ sắp đến hạn thanh toán",
-        "GET /api/bills/:invoiceId":                       "Tra theo invoiceId (ID_HDON)",
+        "GET /api/bills/:invoiceId":                       "Tra theo invoiceId (ID_HDON — CPC)",
+        "GET /api/bills/npc/:idHdon":                     "Tra electricity_bills theo id_hdon NPC (URL-encode)",
       },
       export: {
         "GET /api/export/period?ky=&thang=&nam=":          "Xuất Excel danh sách HĐ 1 kỳ",
@@ -120,6 +125,32 @@ app.get("/", (c) =>
         "GET /api/health":                                 "Tổng quan hệ thống",
         "GET /api/health/db":                              "Trạng thái MongoDB + số documents",
         "GET /api/health/data-integrity":                  "Cross-check invoice_items vs electricity_bills",
+      },
+      npc: {
+        "POST /api/npc/accounts":                           "Thêm tài khoản NPC { username, password, label? } (cần NPC_CREDENTIALS_SECRET)",
+        "POST /api/npc/accounts/bulk":                     "Import hàng loạt { accounts: [{ username, password, label? }] }",
+        "GET  /api/npc/accounts?enabledOnly=&limit=&skip=": "Danh sách tài khoản (không trả mật khẩu)",
+        "PATCH /api/npc/accounts/:id":                     "{ enabled } hoặc { password } — đổi MK xóa disabledReason",
+        "GET  /api/npc/bills?maKhachHang=&limit=":         "Danh sách electricity_bills đã parse (EVN_NPC)",
+        "POST /api/npc/ensure-bill":                       "Agent: { username|maKhachHang, ky, thang, nam } — cache_hit | queued (202) + agentMessage",
+        "POST /api/npc/tasks":                               "Tạo task quét NPC { npcAccountId, ky, thang, nam }",
+        "POST /api/npc/tasks/enqueue-all-enabled":          "Xếp hàng quét cho mọi tài khoản NPC enabled (cùng ky/thang/nam)",
+      },
+      pdf: {
+        "GET /api/pdf/npc/:idHdon":
+          "Tải file PDF NPC đã lưu theo id_hdon (encodeURIComponent)",
+        "GET /api/pdf/npc/customer/:maKH/list?limit=":
+          "Liệt kê PDF NPC đã parse của một mã khách hàng",
+        "GET /api/pdf/invoice/:invoiceId?fileType=TBAO|HDON":
+          "Tải file PDF theo invoiceId",
+        "GET /api/pdf/customer/:maKH/latest?fileType=TBAO|HDON&ky=&thang=&nam=":
+          "Tải PDF mới nhất của 1 khách hàng (có thể lọc kỳ/tháng/năm)",
+        "GET /api/pdf/customer/:maKH/list?fileType=TBAO|HDON&limit=20":
+          "Liệt kê metadata PDF của khách hàng để agent chọn file",
+        "GET /api/pdf/customer/:maKH/zip?fileType=TBAO|HDON&ky=&thang=&nam=&limit=":
+          "ZIP nhiều PDF của 1 khách hàng (lọc kỳ/tháng/năm, giới hạn số file)",
+        "GET /api/pdf/period/zip?ky=&thang=&nam=&fileType=TBAO|HDON&limit=":
+          "ZIP tất cả PDF đã tải trong 1 kỳ/tháng/năm (mọi KH)",
       },
     },
   }),

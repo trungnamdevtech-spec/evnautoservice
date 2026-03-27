@@ -173,11 +173,11 @@ export class EVNCPCWorker extends BaseWorker {
         // Không throw ở đây: desktop native input đang vỡ/khó ổn định.
         // Ta sẽ verify dựa trên URL request thực tế ở bước collectInvoiceList.
         if (!v2.ok) {
-          logger.warn(
-            `[task ${traceTaskId}] Native input khác payload (chỉ cảnh báo; verify theo URL request). ` +
-              `expected period=${inv.period} month=${inv.month} year=${inv.year} ` +
-              `actual period=${v2.actual.period} month=${v2.actual.month} year=${v2.actual.year}`,
-          );
+          // logger.warn(
+          //   `[task ${traceTaskId}] Native input khác payload (chỉ cảnh báo; verify theo URL request). ` +
+          //     `expected period=${inv.period} month=${inv.month} year=${inv.year} ` +
+          //     `actual period=${v2.actual.period} month=${v2.actual.month} year=${v2.actual.year}`,
+          // );
         }
       }
     });
@@ -384,15 +384,16 @@ export class EVNCPCWorker extends BaseWorker {
 
       let success = 0;
       let failed = 0;
-      const failedIds: number[] = [];
+      const failedIds = new Set<number>();
       const FILE_TYPE: PdfFileType = "TBAO";
 
-      for (const item of allItems) {
+      const downloadOne = async (item: (typeof allItems)[number], countAsSuccessWhenAlreadyOk = true): Promise<void> => {
         const existing = item.pdfDownloads?.[FILE_TYPE];
         if (existing?.status === "ok") {
           logger.debug(`[task ${traceTaskId}] PDF skip ID_HDON=${item.ID_HDON} (đã có)`);
-          success++;
-          continue;
+          if (countAsSuccessWhenAlreadyOk) success++;
+          failedIds.delete(item.ID_HDON);
+          return;
         }
 
         try {
@@ -409,6 +410,7 @@ export class EVNCPCWorker extends BaseWorker {
             status: "ok",
           });
           success++;
+          failedIds.delete(item.ID_HDON);
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           logger.warn(`[task ${traceTaskId}] PDF lỗi ID_HDON=${item.ID_HDON}: ${error}`);
@@ -419,12 +421,46 @@ export class EVNCPCWorker extends BaseWorker {
             status: "error",
             error: error.slice(0, 500),
           }).catch(() => undefined);
-          failed++;
-          failedIds.push(item.ID_HDON);
+          failedIds.add(item.ID_HDON);
+        }
+      };
+
+      for (const item of allItems) {
+        await downloadOne(item, true);
+      }
+
+      // Sweep retry: hữu ích khi vừa qua cửa sổ quota/429 hoặc lỗi mạng ngắn hạn.
+      const sweepCount = Math.max(0, env.evnCpcPdfRetrySweeps);
+      for (let sweep = 1; sweep <= sweepCount && failedIds.size > 0; sweep++) {
+        const delayMs = Math.max(0, env.evnCpcPdfRetrySweepDelayMs);
+        if (delayMs > 0) {
+          trace(
+            "PDF_RETRY_WAIT",
+            `sweep ${sweep}/${sweepCount}: chờ ${delayMs}ms trước khi retry ${failedIds.size} file lỗi`,
+          );
+          await sleep(delayMs);
+        }
+        const retryCandidates = await this.invoiceRepo.findPendingPdfDownload(
+          inv.period,
+          thangNorm,
+          inv.year,
+          FILE_TYPE,
+        );
+        if (retryCandidates.length === 0) break;
+        trace("PDF_RETRY", `sweep ${sweep}/${sweepCount}: retry ${retryCandidates.length} file`);
+        for (const item of retryCandidates) {
+          const wasFailed = failedIds.has(item.ID_HDON);
+          await downloadOne(item, false);
+          if (wasFailed && !failedIds.has(item.ID_HDON)) {
+            // Chuyển từ fail -> success trong sweep retry
+            success++;
+          }
         }
       }
 
-      pdfSync = { attempted: allItems.length, success, failed, failedIds };
+      failed = failedIds.size;
+
+      pdfSync = { attempted: allItems.length, success, failed, failedIds: [...failedIds] };
       trace("PDF_DONE", `${success} ok, ${failed} lỗi / ${allItems.length} dòng kỳ`);
     });
 
