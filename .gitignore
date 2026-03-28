@@ -2,10 +2,9 @@
 node_modules/
 dist/
 
-# Secrets & môi trường local (chỉ đẩy .env.example)
+# Secrets & môi trường local — không commit (pattern .env.* gồm cả .env.example)
 .env
 .env.*
-!.env.example
 
 # Logs
 *.log
