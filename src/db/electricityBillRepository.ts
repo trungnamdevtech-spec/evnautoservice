@@ -2,14 +2,21 @@ import type { Collection, Filter, Sort } from "mongodb";
 import { getMongoDb } from "./mongo.js";
 import type { ElectricityBill, ElectricityProvider } from "../types/electricityBill.js";
 import { PARSER_VERSION } from "../services/pdf/ElectricityBillParser.js";
+import type { ElectricityBillRegionScope } from "./electricityBillRegionScope.js";
+import { mergeFilterWithRegion } from "./electricityBillRegionScope.js";
 
 const COLLECTION = "electricity_bills";
 
 export interface BillQueryOptions {
   maKhachHang?: string;
   maDonViQuanLy?: string;
-  /** Lọc theo nguồn — bỏ qua để lấy cả CPC + NPC */
+  /** Lọc theo nguồn — EVN_NPC: chỉ NPC; EVN_CPC: CPC + bản ghi cũ không có `provider` */
   provider?: ElectricityProvider;
+  /**
+   * Khi không truyền `provider`: lọc theo miền (mặc định EVN_CPC — không trộn NPC).
+   * `all`: không lọc miền (trộn toàn bộ — chỉ dùng khi cần).
+   */
+  regionScope?: ElectricityBillRegionScope;
   ky?: 1 | 2 | 3;
   thang?: number;
   nam?: number;
@@ -208,7 +215,18 @@ export class ElectricityBillRepository {
 
     if (opts.maKhachHang) filter.maKhachHang = opts.maKhachHang;
     if (opts.maDonViQuanLy) filter.maDonViQuanLy = opts.maDonViQuanLy;
-    if (opts.provider) filter.provider = opts.provider;
+    if (opts.provider === "EVN_NPC") {
+      filter.provider = "EVN_NPC";
+    } else if (opts.provider === "EVN_CPC") {
+      Object.assign(filter, mergeFilterWithRegion({}, "EVN_CPC"));
+    } else if (opts.provider) {
+      filter.provider = opts.provider;
+    } else {
+      const scope = opts.regionScope ?? "EVN_CPC";
+      if (scope !== "all") {
+        Object.assign(filter, mergeFilterWithRegion({}, scope));
+      }
+    }
     if (opts.ky !== undefined) filter["kyBill.ky"] = opts.ky;
     if (opts.thang !== undefined) filter["kyBill.thang"] = opts.thang;
     if (opts.nam !== undefined) filter["kyBill.nam"] = opts.nam;
@@ -266,13 +284,15 @@ export class ElectricityBillRepository {
   }
 
   /** Thống kê tổng tiền theo tháng/năm — dùng cho dashboard / reporting API */
-  async aggregateByMonth(nam: number): Promise<
-    { thang: number; soHoaDon: number; tongTien: number; tongDienKwh: number }[]
-  > {
+  async aggregateByMonth(
+    nam: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<{ thang: number; soHoaDon: number; tongTien: number; tongDienKwh: number }[]> {
     const c = await this.col();
+    const match = mergeFilterWithRegion({ "kyBill.nam": nam, status: "parsed" }, regionScope);
     return c
       .aggregate<{ thang: number; soHoaDon: number; tongTien: number; tongDienKwh: number }>([
-        { $match: { "kyBill.nam": nam, status: "parsed" } },
+        { $match: match },
         {
           $group: {
             _id: "$kyBill.thang",
@@ -288,7 +308,10 @@ export class ElectricityBillRepository {
   }
 
   /** Tìm hóa đơn sắp đến hạn thanh toán trong N ngày tới */
-  async findDueSoon(withinDays: number): Promise<ElectricityBill[]> {
+  async findDueSoon(
+    withinDays: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<ElectricityBill[]> {
     const now = new Date();
     const until = new Date(now.getTime() + withinDays * 86_400_000);
     return this.find({
@@ -296,6 +319,7 @@ export class ElectricityBillRepository {
       hanThanhToanBefore: until,
       status: "parsed",
       sort: { hanThanhToan: 1 },
+      regionScope,
     });
   }
 
@@ -304,28 +328,38 @@ export class ElectricityBillRepository {
   /** Toàn bộ hóa đơn của 1 mã khách hàng, sắp xếp mới nhất trước */
   async findByCustomer(
     maKhachHang: string,
-    opts: { thang?: number; nam?: number; ky?: 1 | 2 | 3 } = {},
+    opts: { thang?: number; nam?: number; ky?: 1 | 2 | 3; regionScope?: ElectricityBillRegionScope } = {},
   ): Promise<ElectricityBill[]> {
+    const { regionScope = "EVN_CPC", ...rest } = opts;
     return this.find({
       maKhachHang: maKhachHang.toUpperCase(),
-      ...opts,
+      ...rest,
       status: "parsed",
       sort: { "kyBill.nam": -1, "kyBill.thang": -1, "kyBill.ky": -1 },
       limit: 200,
+      regionScope,
     });
   }
 
   /** Hóa đơn mới nhất của 1 mã khách hàng */
-  async findLatestByCustomer(maKhachHang: string): Promise<ElectricityBill | null> {
+  async findLatestByCustomer(
+    maKhachHang: string,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<ElectricityBill | null> {
     const c = await this.col();
-    return c.findOne(
+    const filter = mergeFilterWithRegion(
       { maKhachHang: maKhachHang.toUpperCase(), status: "parsed" },
-      { sort: { "kyBill.nam": -1, "kyBill.thang": -1, "kyBill.ky": -1 } },
+      regionScope,
     );
+    return c.findOne(filter, { sort: { "kyBill.nam": -1, "kyBill.thang": -1, "kyBill.ky": -1 } });
   }
 
   /** Hóa đơn của 1 KH đến hạn trong N ngày tới */
-  async findCustomerDueSoon(maKhachHang: string, withinDays: number): Promise<ElectricityBill[]> {
+  async findCustomerDueSoon(
+    maKhachHang: string,
+    withinDays: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<ElectricityBill[]> {
     const now = new Date();
     const until = new Date(now.getTime() + withinDays * 86_400_000);
     return this.find({
@@ -334,6 +368,7 @@ export class ElectricityBillRepository {
       hanThanhToanBefore: until,
       status: "parsed",
       sort: { hanThanhToan: 1 },
+      regionScope,
     });
   }
 
@@ -341,37 +376,56 @@ export class ElectricityBillRepository {
    * Tất cả hóa đơn trong 1 kỳ/tháng/năm — dùng cho Excel export.
    * Trả về đầy đủ, sắp theo maKhachHang.
    */
-  async findByPeriod(ky: 1 | 2 | 3, thang: number, nam: number): Promise<ElectricityBill[]> {
+  async findByPeriod(
+    ky: 1 | 2 | 3,
+    thang: number,
+    nam: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<ElectricityBill[]> {
     const c = await this.col();
-    return c
-      .find({ "kyBill.ky": ky, "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" })
-      .sort({ maKhachHang: 1 })
-      .toArray();
+    const filter = mergeFilterWithRegion(
+      { "kyBill.ky": ky, "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" },
+      regionScope,
+    );
+    return c.find(filter).sort({ maKhachHang: 1 }).toArray();
   }
 
   /** Tất cả hóa đơn trong 1 tháng/năm (tất cả kỳ) — dùng cho Excel export tháng */
-  async findByMonth(thang: number, nam: number): Promise<ElectricityBill[]> {
+  async findByMonth(
+    thang: number,
+    nam: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<ElectricityBill[]> {
     const c = await this.col();
-    return c
-      .find({ "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" })
-      .sort({ maKhachHang: 1, "kyBill.ky": 1 })
-      .toArray();
+    const filter = mergeFilterWithRegion(
+      { "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" },
+      regionScope,
+    );
+    return c.find(filter).sort({ maKhachHang: 1, "kyBill.ky": 1 }).toArray();
   }
 
-  /** Danh sách tất cả mã khách hàng unique có trong DB */
-  async listAllCustomers(): Promise<string[]> {
+  /** Danh sách tất cả mã khách hàng unique có trong DB (theo miền) */
+  async listAllCustomers(regionScope: ElectricityBillRegionScope = "EVN_CPC"): Promise<string[]> {
     const c = await this.col();
-    return c.distinct("maKhachHang", { status: "parsed" });
+    const q = mergeFilterWithRegion({ status: "parsed" }, regionScope);
+    return c.distinct("maKhachHang", q);
   }
 
   /** Thống kê lịch sử tiêu thụ của 1 KH theo tháng */
-  async customerConsumptionHistory(maKhachHang: string): Promise<
+  async customerConsumptionHistory(
+    maKhachHang: string,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<
     { nam: number; thang: number; ky: number; tongKwh: number; tongTien: number; hanThanhToan: Date }[]
   > {
     const c = await this.col();
+    const match = mergeFilterWithRegion(
+      { maKhachHang: maKhachHang.toUpperCase(), status: "parsed" },
+      regionScope,
+    );
     return c
       .aggregate<{ nam: number; thang: number; ky: number; tongKwh: number; tongTien: number; hanThanhToan: Date }>([
-        { $match: { maKhachHang: maKhachHang.toUpperCase(), status: "parsed" } },
+        { $match: match },
         {
           $project: {
             nam: "$kyBill.nam",
@@ -388,16 +442,25 @@ export class ElectricityBillRepository {
   }
 
   /** Thống kê tổng kỳ theo tháng/năm — grouped by KH */
-  async aggregateByPeriod(ky: 1 | 2 | 3, thang: number, nam: number): Promise<{
+  async aggregateByPeriod(
+    ky: 1 | 2 | 3,
+    thang: number,
+    nam: number,
+    regionScope: ElectricityBillRegionScope = "EVN_CPC",
+  ): Promise<{
     soKhachHang: number;
     tongTien: number;
     tongKwh: number;
     tongThue: number;
   }> {
     const c = await this.col();
+    const match = mergeFilterWithRegion(
+      { "kyBill.ky": ky, "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" },
+      regionScope,
+    );
     const [result] = await c
       .aggregate<{ soKhachHang: number; tongTien: number; tongKwh: number; tongThue: number }>([
-        { $match: { "kyBill.ky": ky, "kyBill.thang": thang, "kyBill.nam": nam, status: "parsed" } },
+        { $match: match },
         {
           $group: {
             _id: null,

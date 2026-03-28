@@ -14,6 +14,12 @@ function parseBoolSafe(value: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
+function parseFloatSafe(value: string | undefined, fallback: number): number {
+  if (value === undefined || value === "") return fallback;
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export const env = {
   /** Compose/production: set MONGODB_URI hoặc để compose inject mongodb://mongo:27017 */
   mongodbUri: process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017", // fallback chỉ cho dev không có .env
@@ -113,6 +119,17 @@ export const env = {
    * Mặc định 5 — có thể giảm qua env khi test.
    */
   npcCaptchaMaxAttempts: Math.min(10, Math.max(1, parseIntSafe(process.env.NPC_CAPTCHA_MAX_ATTEMPTS, 5))),
+  /**
+   * Hệ số phóng ảnh captcha NPC trước khi chụp gửi anticaptcha (trước đây cố định ×3).
+   * Tăng (vd. 4–5) giúp OCR ổn định hơn; quá cao có thể làm file PNG nặng.
+   */
+  npcCaptchaImageScale: Math.min(8, Math.max(2, parseFloatSafe(process.env.NPC_CAPTCHA_IMAGE_SCALE, 4))),
+  /**
+   * Sau khi nhân scale, nếu chiều cao ảnh (px) vẫn nhỏ hơn giá trị này thì phóng thêm tỉ lệ
+   * (giữ nguyên tỉ lệ khung) — hữu ích khi captcha hiển thị rất thấp trên UI.
+   * 0 = tắt.
+   */
+  npcCaptchaImageMinHeightPx: Math.max(0, parseIntSafe(process.env.NPC_CAPTCHA_IMAGE_MIN_HEIGHT_PX, 96)),
   /** Timeout mỗi bước Playwright NPC (goto, probe) — máy chủ mạng chậm nên tăng (ms). */
   npcStepTimeoutMs: Math.max(15_000, parseIntSafe(process.env.NPC_STEP_TIMEOUT_MS, 90_000)),
   /** GET TraCuuHDSPC: retry khi 403/429/502 (WAF tạm chặn). 0 = không retry. */

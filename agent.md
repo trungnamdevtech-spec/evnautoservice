@@ -79,7 +79,7 @@ Cong nghe chinh:
 - `taskRepository.ts`: CRUD task queue (`scrape_tasks`) — claim ca `EVN_CPC` va `EVN_NPC`.
 - `npcAccountRepository.ts`: tai khoan NPC (`npc_accounts`).
 - `invoiceItemRepository.ts`: upsert danh sach invoice + status tai PDF.
-- `electricityBillRepository.ts`: upsert/truy van bill da parse.
+- `electricityBillRepository.ts`: upsert/truy van bill da parse; loc theo miền: `electricityBillRegionScope.ts`.
 
 ### `src/providers/evn`
 - `EVNCPCWorker.ts`: pipeline EVN CPC end-to-end.
@@ -98,9 +98,10 @@ Cong nghe chinh:
 - `server.ts`: tao app Hono, middleware, auth, route mounting.
 - `contract.ts`: version contract/header/doc path.
 - `routes/tasksRouter.ts`: tao/cancel/retry/list task.
-- `routes/billsRouter.ts`: truy van bill theo customer/period/month/due-soon/invoiceId.
-- `routes/statsRouter.ts`: thong ke thang/ky/customer history.
-- `routes/exportRouter.ts`: tai file Excel.
+- `routes/billsRouter.ts`: truy van bill theo customer/period/month/due-soon/invoiceId (**query `region` / `provider`** — xem `AGENT_REGION_API_UPDATE.md`).
+- `routes/statsRouter.ts`: thong ke thang/ky/customer history (**region**).
+- `routes/exportRouter.ts`: tai file Excel (**region**).
+- `regionQuery.ts`: doc `region` hoac `provider` tu query string.
 - `routes/healthRouter.ts`: health/db/data integrity.
 - `routes/npcRouter.ts`: tai khoan NPC + tao task `EVN_NPC`.
 
@@ -146,10 +147,11 @@ Du lieu hoa don lay tu API CPC:
 - Dung lam nguon de tai PDF va map metadata parse.
 
 ### `electricity_bills`
-Du lieu da parse tu PDF:
-- Key duy nhat: `invoiceId` (map voi `ID_HDON`).
-- Chua cau truc day du (khach hang, ky bill, tong tien, han thanh toan,...).
+Du lieu da parse tu PDF (CPC + NPC):
+- `provider`: `EVN_CPC` | `EVN_NPC` (ban ghi cu co the khong co field — coi la CPC khi loc miền).
+- CPC: `invoiceId` / `billKey` cpc; NPC: `npcIdHdon`, `billKey` npc — khong tron khoa giua miền.
 - `status`: `parsed | error | pending`.
+- **API list/export/stats:** luôn truyền `region=EVN_CPC|EVN_NPC|all` khi tích hợp — chi tiết: `AGENT_REGION_API_UPDATE.md`.
 
 ---
 

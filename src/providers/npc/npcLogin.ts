@@ -125,8 +125,10 @@ async function getNpcCaptchaImageBase64(page: Page, stepTimeoutMs: number): Prom
   try {
     await loc.scrollIntoViewIfNeeded().catch(() => undefined);
     await page.waitForTimeout(80);
+    const scale = env.npcCaptchaImageScale;
+    const minHeightPx = env.npcCaptchaImageMinHeightPx;
     await page.evaluate(
-      ({ imageSelector, overlayId }) => {
+      ({ imageSelector, overlayId, scale: s, minHeightPx: minH }) => {
         document.getElementById(overlayId)?.remove();
 
         const srcEl = document.querySelector(imageSelector);
@@ -145,18 +147,26 @@ async function getNpcCaptchaImageBase64(page: Page, stepTimeoutMs: number): Prom
         overlay.style.zIndex = "2147483647";
         overlay.style.pointerEvents = "none";
 
+        let w = Math.max(1, Math.round(srcEl.clientWidth * s));
+        let h = Math.max(1, Math.round(srcEl.clientHeight * s));
+        if (minH > 0 && h < minH) {
+          const f = minH / h;
+          w = Math.max(1, Math.round(w * f));
+          h = Math.max(1, Math.round(h * f));
+        }
+
         const enlarged = document.createElement("img");
         enlarged.src = srcEl.currentSrc || srcEl.src;
         enlarged.alt = "npc-captcha-capture";
-        enlarged.style.width = `${Math.max(1, Math.round(srcEl.clientWidth * 3))}px`;
-        enlarged.style.height = `${Math.max(1, Math.round(srcEl.clientHeight * 3))}px`;
+        enlarged.style.width = `${w}px`;
+        enlarged.style.height = `${h}px`;
         enlarged.style.display = "block";
         enlarged.style.imageRendering = "auto";
 
         overlay.appendChild(enlarged);
         document.body.appendChild(overlay);
       },
-      { imageSelector: sel, overlayId: captureId },
+      { imageSelector: sel, overlayId: captureId, scale, minHeightPx },
     );
 
     const overlay = page.locator(`#${captureId}`);
@@ -167,7 +177,7 @@ async function getNpcCaptchaImageBase64(page: Page, stepTimeoutMs: number): Prom
     }
     if (env.npcLoginTraceTiming) {
       console.info(
-        `[npc-captcha] clip=${Math.round(box.width)}x${Math.round(box.height)} token=${captchaToken || "(empty)"} (region screenshot x3)`,
+        `[npc-captcha] clip=${Math.round(box.width)}x${Math.round(box.height)} token=${captchaToken || "(empty)"} (scale=${scale}, minH=${minHeightPx || "off"})`,
       );
     }
 

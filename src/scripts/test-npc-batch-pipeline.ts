@@ -3,6 +3,8 @@
  * trên nhiều tài khoản, chia thành các lô (batch) tuần tự.
  *
  * Mặc định: 20 user, 2 lô × 10 (có thể đổi).
+ * Sau lượt chính: mặc định **một vòng retry** chỉ các TK lỗi do captcha (API/site hết lần thử)
+ * — tránh bỏ sót do captcha khó; tắt: `--captcha-retry-rounds=0`.
  *
  * Usage (khuyến nghị — tránh npm nuốt cờ `--ky` trên npm 10+):
  *   node --import tsx src/scripts/test-npc-batch-pipeline.ts --ky=1 --month=3 --year=2026 --total=20 --batch-size=10
@@ -35,6 +37,8 @@ function parseArgs(): {
   batchSize: number;
   batchDelayMs: number;
   skip: number;
+  captchaRetryRounds: number;
+  captchaRetryDelayMs: number;
 } {
   const ev = process.env;
   let ky = ev.NPC_BATCH_KY?.trim() || "1";
@@ -46,6 +50,18 @@ function parseArgs(): {
   let batchSize = ev.NPC_BATCH_SIZE ? Number.parseInt(ev.NPC_BATCH_SIZE, 10) || 10 : 10;
   let batchDelayMs = ev.NPC_BATCH_DELAY_MS ? Number.parseInt(ev.NPC_BATCH_DELAY_MS, 10) || 4000 : 4000;
   let skip = ev.NPC_BATCH_SKIP ? Number.parseInt(ev.NPC_BATCH_SKIP, 10) || 0 : 0;
+  /** Số vòng retry sau lượt chính (chỉ TK lỗi captcha). 0 = tắt. Mặc định 1. */
+  let captchaRetryRounds = ev.NPC_BATCH_CAPTCHA_RETRY_ROUNDS
+    ? Number.parseInt(ev.NPC_BATCH_CAPTCHA_RETRY_ROUNDS, 10)
+    : 1;
+  if (!Number.isFinite(captchaRetryRounds)) captchaRetryRounds = 1;
+  captchaRetryRounds = Math.max(0, Math.min(20, captchaRetryRounds));
+  let captchaRetryDelayMs = ev.NPC_BATCH_CAPTCHA_RETRY_DELAY_MS
+    ? Number.parseInt(ev.NPC_BATCH_CAPTCHA_RETRY_DELAY_MS, 10) || 3000
+    : 3000;
+  if (!Number.isFinite(captchaRetryDelayMs)) captchaRetryDelayMs = 3000;
+  captchaRetryDelayMs = Math.max(0, captchaRetryDelayMs);
+
   total = Math.max(1, total);
   batchSize = Math.max(1, batchSize);
   batchDelayMs = Math.max(0, batchDelayMs);
@@ -64,8 +80,24 @@ function parseArgs(): {
     else if (a.startsWith("--batch-delay-ms="))
       batchDelayMs = Math.max(0, Number.parseInt(a.slice(17), 10) || 4000);
     else if (a.startsWith("--skip=")) skip = Math.max(0, Number.parseInt(a.slice(7), 10) || 0);
+    else if (a.startsWith("--captcha-retry-rounds="))
+      captchaRetryRounds = Math.max(0, Math.min(20, Number.parseInt(a.slice(23), 10) || 0));
+    else if (a.startsWith("--captcha-retry-delay-ms="))
+      captchaRetryDelayMs = Math.max(0, Number.parseInt(a.slice(25), 10) || 0);
   }
-  return { ky, month, year, total, batchSize, batchDelayMs, skip };
+  return { ky, month, year, total, batchSize, batchDelayMs, skip, captchaRetryRounds, captchaRetryDelayMs };
+}
+
+/**
+ * Lỗi có thể do captcha khó / API anticaptcha / chụp ảnh — đưa vào hàng retry cuối phiên.
+ * Không retry sai mật khẩu (đã tắt TK).
+ */
+function isCaptchaRetryableFailure(message: string): boolean {
+  if (/wrong_password|sai mật khẩu|đã tắt tài khoản|disabledReason/i.test(message)) return false;
+  if (/Captcha sai sau \d+ lần/i.test(message)) return true;
+  if (message.includes("AnticaptchaClient:")) return true;
+  if (message.includes("Không lấy được vùng captcha")) return true;
+  return false;
 }
 
 async function runOneAccountPipeline(
@@ -118,8 +150,77 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+interface RunSliceResult {
+  success: number;
+  failedOther: number;
+  captchaRetry: NpcAccount[];
+}
+
+/** Chạy tuần tự danh sách TK (chia lô giống lượt chính). */
+async function runAccountSlice(
+  worker: EVNNPCWorker,
+  accounts: NpcAccount[],
+  ky: string,
+  month: string,
+  year: string,
+  batchSize: number,
+  batchDelayMs: number,
+  /** Chỉ số bắt đầu cho log tiến độ (lượt chính = skip; retry = 0). */
+  progressStart: number,
+  /** Tổng mẫu số log (lượt chính = độ dài slice; retry = số TK trong hàng đợi). */
+  progressTotal: number,
+  tracePrefix: string,
+  phaseTag: string,
+): Promise<RunSliceResult> {
+  let success = 0;
+  let failedOther = 0;
+  const captchaRetry: NpcAccount[] = [];
+  let batchIndex = 0;
+
+  for (let i = 0; i < accounts.length; i += batchSize) {
+    batchIndex++;
+    const batch = accounts.slice(i, i + batchSize);
+    console.info(
+      `\n[${phaseTag}] ===== Lô ${batchIndex}: ${batch.length} tài khoản (${batch[0]?.username} …) =====\n`,
+    );
+
+    for (let j = 0; j < batch.length; j++) {
+      const acc = batch[j]!;
+      const globalIdx = progressStart + i + j + 1;
+      const traceId = `${tracePrefix}-${batchIndex}-${j + 1}-${acc.username}`;
+      console.info(`[${phaseTag}] [${globalIdx}/${progressStart + progressTotal}] ${acc.username} …`);
+
+      const result = await runOneAccountPipeline(worker, acc, ky, month, year, traceId);
+
+      if (result.ok) {
+        success++;
+        const m = result.metadata;
+        const pdf = m.pdfSync;
+        const parse = m.parseSync;
+        console.info(
+          `[${phaseTag}]   ✓ OK — pdf ${pdf?.success ?? 0}/${pdf?.attempted ?? 0} | parse ${parse?.success ?? 0}/${parse?.attempted ?? 0}`,
+        );
+      } else if (isCaptchaRetryableFailure(result.error)) {
+        captchaRetry.push(acc);
+        console.warn(`[${phaseTag}]   ✗ (sẽ retry captcha) ${result.error.slice(0, 400)}`);
+      } else {
+        failedOther++;
+        console.warn(`[${phaseTag}]   ✗ ${result.error.slice(0, 400)}`);
+      }
+    }
+
+    if (i + batchSize < accounts.length && batchDelayMs > 0) {
+      console.info(`[${phaseTag}] Nghỉ ${batchDelayMs}ms trước lô tiếp theo…`);
+      await sleep(batchDelayMs);
+    }
+  }
+
+  return { success, failedOther, captchaRetry };
+}
+
 async function main(): Promise<void> {
-  const { ky, month, year, total, batchSize, batchDelayMs, skip } = parseArgs();
+  const { ky, month, year, total, batchSize, batchDelayMs, skip, captchaRetryRounds, captchaRetryDelayMs } =
+    parseArgs();
 
   await getMongoDb();
   const npcRepo = new NpcAccountRepository();
@@ -127,7 +228,7 @@ async function main(): Promise<void> {
   const slice = all.slice(skip, skip + total);
 
   console.info(
-    `[npc-batch] Tham số: Kỳ ${ky} — tháng ${month} — năm ${year} | cần ${total} TK (skip=${skip}, batch=${batchSize}, delay=${batchDelayMs}ms)`,
+    `[npc-batch] Tham số: Kỳ ${ky} — tháng ${month} — năm ${year} | cần ${total} TK (skip=${skip}, batch=${batchSize}, delay=${batchDelayMs}ms, captchaRetryRounds=${captchaRetryRounds}, captchaRetryDelayMs=${captchaRetryDelayMs}ms)`,
   );
   console.info(`[npc-batch] Trong DB: ${all.length} tài khoản enabled; lấy ${slice.length} bản ghi.`);
 
@@ -139,46 +240,71 @@ async function main(): Promise<void> {
 
   const worker = new EVNNPCWorker(new AnticaptchaClient());
 
-  let success = 0;
-  let failed = 0;
-  let batchIndex = 0;
+  const mainResult = await runAccountSlice(
+    worker,
+    slice,
+    ky,
+    month,
+    year,
+    batchSize,
+    batchDelayMs,
+    skip,
+    slice.length,
+    "npc-batch",
+    "npc-batch",
+  );
 
-  for (let i = 0; i < slice.length; i += batchSize) {
-    batchIndex++;
-    const batch = slice.slice(i, i + batchSize);
-    console.info(`\n[npc-batch] ===== Lô ${batchIndex}: ${batch.length} tài khoản (${slice[i]?.username} …) =====\n`);
+  let success = mainResult.success;
+  let failedOther = mainResult.failedOther;
+  let captchaQueue = mainResult.captchaRetry;
+  let captchaRecovered = 0;
 
-    for (let j = 0; j < batch.length; j++) {
-      const acc = batch[j]!;
-      const globalIdx = skip + i + j + 1;
-      const traceId = `npc-batch-${batchIndex}-${j + 1}-${acc.username}`;
-      console.info(`[npc-batch] [${globalIdx}/${skip + slice.length}] ${acc.username} …`);
-
-      const result = await runOneAccountPipeline(worker, acc, ky, month, year, traceId);
-
-      if (result.ok) {
-        success++;
-        const m = result.metadata;
-        const pdf = m.pdfSync;
-        const parse = m.parseSync;
-        console.info(
-          `[npc-batch]   ✓ OK — pdf ${pdf?.success ?? 0}/${pdf?.attempted ?? 0} | parse ${parse?.success ?? 0}/${parse?.attempted ?? 0}`,
-        );
-      } else {
-        failed++;
-        console.warn(`[npc-batch]   ✗ ${result.error.slice(0, 400)}`);
-      }
+  for (let round = 1; round <= captchaRetryRounds && captchaQueue.length > 0; round++) {
+    if (captchaRetryDelayMs > 0) {
+      console.info(
+        `\n[npc-batch] Chờ ${captchaRetryDelayMs}ms trước vòng retry captcha ${round}/${captchaRetryRounds} (${captchaQueue.length} TK)…`,
+      );
+      await sleep(captchaRetryDelayMs);
+    } else {
+      console.info(
+        `\n[npc-batch] === Vòng retry captcha ${round}/${captchaRetryRounds} (${captchaQueue.length} TK) ===\n`,
+      );
     }
 
-    if (i + batchSize < slice.length && batchDelayMs > 0) {
-      console.info(`[npc-batch] Nghỉ ${batchDelayMs}ms trước lô tiếp theo…`);
-      await sleep(batchDelayMs);
-    }
+    const phaseTag = `npc-batch-retry${round}`;
+    const tracePrefix = `npc-batch-retry${round}`;
+    const qLen = captchaQueue.length;
+    const r = await runAccountSlice(
+      worker,
+      captchaQueue,
+      ky,
+      month,
+      year,
+      batchSize,
+      batchDelayMs,
+      0,
+      qLen,
+      tracePrefix,
+      phaseTag,
+    );
+
+    captchaRecovered += r.success;
+    failedOther += r.failedOther;
+    success += r.success;
+    captchaQueue = r.captchaRetry;
   }
+
+  const failedCaptchaFinal = captchaQueue.length;
+  const failedTotal = failedOther + failedCaptchaFinal;
 
   await closeMongo();
 
-  console.info(`\n[npc-batch] Hoàn tất: thành công ${success} / thất bại ${failed} / tổng ${slice.length}`);
+  console.info(
+    `\n[npc-batch] Hoàn tất: OK ${success} / lỗi khác (không retry captcha) ${failedOther} / vẫn lỗi captcha sau ${captchaRetryRounds} vòng retry ${failedCaptchaFinal} / tổng TK trong lượt ${slice.length}`,
+  );
+  if (captchaRetryRounds > 0 && captchaRecovered > 0) {
+    console.info(`[npc-batch] Đã cứu được sau retry captcha: ${captchaRecovered} TK.`);
+  }
 }
 
 main().catch((err) => {
