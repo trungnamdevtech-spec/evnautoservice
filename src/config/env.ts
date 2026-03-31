@@ -165,4 +165,13 @@ export const env = {
    * Mặc định tắt — agent dùng async (202 + poll task).
    */
   npcOnlinePaymentLinkSyncApiEnabled: parseBoolSafe(process.env.NPC_ONLINE_PAYMENT_LINK_SYNC_API_ENABLED, false),
+
+  /**
+   * POST JSON tới URL này khi worker ghi SUCCESS/FAILED cho mọi task (EVN_CPC / EVN_NPC).
+   * Để trống = tắt webhook.
+   */
+  agentTaskWebhookUrl: (process.env.AGENT_TASK_WEBHOOK_URL ?? "").trim(),
+  /** Ký HMAC-SHA256 body (hex) — header `X-Agent-Task-Signature: sha256=<hex>`. Để trống = không ký. */
+  agentTaskWebhookSecret: (process.env.AGENT_TASK_WEBHOOK_SECRET ?? "").trim(),
+  agentTaskWebhookTimeoutMs: Math.max(1000, parseIntSafe(process.env.AGENT_TASK_WEBHOOK_TIMEOUT_MS, 15_000)),
 };

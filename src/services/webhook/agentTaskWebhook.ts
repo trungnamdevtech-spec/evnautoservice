@@ -1,0 +1,78 @@
+import { createHmac } from "node:crypto";
+import type { ObjectId } from "mongodb";
+import { env } from "../../config/env.js";
+import { logger } from "../../core/logger.js";
+import type { InvoiceDownloadMetadata } from "../../types/task.js";
+import type { ScrapeTask } from "../../types/task.js";
+
+/** Payload POST tới `AGENT_TASK_WEBHOOK_URL` khi task kết thúc. */
+export type AgentTaskWebhookPayload = {
+  event: "task.finished";
+  taskId: string;
+  provider: ScrapeTask["provider"];
+  status: "SUCCESS" | "FAILED";
+  payload: Record<string, unknown>;
+  resultMetadata: InvoiceDownloadMetadata | null;
+  errorMessage: string | null;
+  completedAt: string;
+};
+
+/**
+ * Gửi kết quả task tới Agent Gateway (không throw — lỗi chỉ log).
+ * Bật khi đặt `AGENT_TASK_WEBHOOK_URL`.
+ */
+export async function fireAgentTaskWebhook(args: {
+  task: ScrapeTask;
+  taskId: ObjectId;
+  status: "SUCCESS" | "FAILED";
+  resultMetadata?: InvoiceDownloadMetadata | null;
+  errorMessage?: string | null;
+}): Promise<void> {
+  const url = env.agentTaskWebhookUrl;
+  if (!url) return;
+
+  const bodyObj: AgentTaskWebhookPayload = {
+    event: "task.finished",
+    taskId: args.taskId.toHexString(),
+    provider: args.task.provider,
+    status: args.status,
+    payload: args.task.payload as Record<string, unknown>,
+    resultMetadata: args.status === "SUCCESS" ? (args.resultMetadata ?? null) : null,
+    errorMessage: args.status === "FAILED" ? (args.errorMessage ?? null) : null,
+    completedAt: new Date().toISOString(),
+  };
+
+  const bodyStr = JSON.stringify(bodyObj);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": "EVN-AutoCheck-Worker/1",
+  };
+  const secret = env.agentTaskWebhookSecret;
+  if (secret) {
+    const sig = createHmac("sha256", secret).update(bodyStr).digest("hex");
+    headers["X-Agent-Task-Signature"] = `sha256=${sig}`;
+  }
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), env.agentTaskWebhookTimeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: bodyStr,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      logger.warn(
+        `[webhook] task ${bodyObj.taskId} — POST ${url} → HTTP ${res.status} ${res.statusText}`,
+      );
+    } else {
+      logger.info(`[webhook] task ${bodyObj.taskId} — delivered HTTP ${res.status}`);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.warn(`[webhook] task ${bodyObj.taskId} — ${msg}`);
+  } finally {
+    clearTimeout(t);
+  }
+}

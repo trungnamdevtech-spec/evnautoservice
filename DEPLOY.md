@@ -27,4 +27,6 @@ Script `*:dist` dùng **`node dist/scripts/...`** (đã có trong image), **khô
 6. **Worker:** `WORKER_CONCURRENCY`, `TASK_POLL_INTERVAL_MS` — tăng `shm_size` nếu nhiều task Playwright.
 7. **Sau deploy:** `GET /api/health`, `GET /api/health/db`; thử `POST /api/npc/tasks` hoặc `enqueue-all-enabled` với kỳ thử.
 
+**Webhook (tuỳ chọn):** `AGENT_TASK_WEBHOOK_URL` — worker POST JSON khi task SUCCESS/FAILED (mọi EVN_CPC / EVN_NPC). Ký tùy chọn: `AGENT_TASK_WEBHOOK_SECRET` → header `X-Agent-Task-Signature: sha256=<hex>`. Timeout: `AGENT_TASK_WEBHOOK_TIMEOUT_MS` (mặc định 15000).
+
 Phiên bản API: header `X-API-Version` / `src/api/contract.ts`.
