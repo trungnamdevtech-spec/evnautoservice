@@ -6,6 +6,7 @@
 import path from "node:path";
 import ExcelJS from "exceljs";
 import { NpcAccountRepository } from "../../db/npcAccountRepository.js";
+import type { TaskRepository } from "../../db/taskRepository.js";
 
 /** Giá trị ô: số, chuỗi, rich text — đưa về chuỗi trim. */
 export function cellToTrimmedString(cell: ExcelJS.Cell): string {
@@ -139,16 +140,20 @@ export async function importNpcAccountsFromXlsxFile(
 export interface ReplaceNpcAccountsFromXlsxResult extends NpcXlsxImportDbResult {
   /** Số bản ghi đã xóa trước khi nạp lại */
   deleted: number;
+  /** Số task EVN_NPC đã xóa (khi bật wipeNpcTasks) */
+  npcTasksDeleted?: number;
 }
 
 /**
  * Thay thế toàn bộ tài khoản NPC: đọc Excel trước — **chỉ khi có ít nhất một dòng hợp lệ**
  * mới xóa hết collection rồi insert (tránh DB trống vì file sai).
+ * `wipeNpcTasks`: sau khi parse OK, xóa mọi `scrape_tasks` provider EVN_NPC (tránh task cũ sau khi đổi id tài khoản).
  */
 export async function replaceAllNpcAccountsFromXlsxFile(
   repo: InstanceType<typeof NpcAccountRepository>,
   absPath: string,
   sheetName?: string,
+  opts?: { wipeNpcTasks?: boolean; taskRepo?: InstanceType<typeof TaskRepository> },
 ): Promise<ReplaceNpcAccountsFromXlsxResult> {
   const parse = await parseNpcAccountsXlsx(absPath, sheetName);
   if (parse.rows.length === 0) {
@@ -156,10 +161,17 @@ export async function replaceAllNpcAccountsFromXlsxFile(
       "Không có dòng dữ liệu hợp lệ trong Excel — không thực hiện xóa (tránh làm trống DB).",
     );
   }
+
+  let npcTasksDeleted: number | undefined;
+  if (opts?.wipeNpcTasks && opts.taskRepo) {
+    npcTasksDeleted = await opts.taskRepo.deleteAllByProvider("EVN_NPC");
+  }
+
   const deleted = await repo.deleteAll();
   const result = await repo.insertManyAccounts(parse.rows);
   return {
     deleted,
+    npcTasksDeleted,
     inserted: result.inserted,
     skipped: result.skipped,
     errors: result.errors,

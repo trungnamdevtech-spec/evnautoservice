@@ -12,7 +12,9 @@
  *
  * Hoặc đặt file `data/npc-accounts.xlsx` và bật AUTO_IMPORT_NPC_XLSX=true khi khởi động app (xem .env.example).
  *
- * **Thay thế toàn bộ** (xóa hết user cũ rồi nạp file mới): `npm run replace:npc-accounts:xlsx -- <file.xlsx> --confirm-delete-all`
+ * **Thay thế toàn bộ** (xóa hết user cũ + tuỳ chọn task NPC, rồi nạp file mới):
+ *   `npm run replace:npc-accounts:clean` (file mặc định `data/account_clean.xlsx`)
+ *   hoặc `npm run replace:npc-accounts:xlsx -- <file.xlsx> --confirm-delete-all [--wipe-npc-tasks]`
  */
 
 import "dotenv/config";

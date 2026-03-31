@@ -264,4 +264,13 @@ export class TaskRepository {
     if (!old) return null;
     return this.insertPendingEvn(old.payload);
   }
+
+  /**
+   * Xóa mọi task theo provider — dùng khi reset `npc_accounts` (task cũ trỏ ObjectId cũ / trạng thái lệch).
+   */
+  async deleteAllByProvider(provider: ScrapeTask["provider"]): Promise<number> {
+    const c = await this.col();
+    const r = await c.deleteMany({ provider });
+    return r.deletedCount ?? 0;
+  }
 }
