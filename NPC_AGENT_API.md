@@ -7,6 +7,7 @@ Tài liệu đầy đủ và đồng bộ phiên bản với code nằm trong:
 - **`docs_autocheckenv/openapi.yaml`** — OpenAPI 3.0 (import gateway / codegen)
 - **`docs_autocheckenv/evn-autocheck-integration-constraints.md`** — ràng buộc provider CPC vs NPC, auth, trùng task
 - **`docs_autocheckenv/agent-gateway-npc-gtgt-contract.md`** — hợp đồng tích hợp **NPC: thông báo + HĐ GTGT** (truy vấn, PDF, Excel, hạn chế)
+- **`AGENT_GATEWAY_TASK_WEBHOOK.md`** (repo root) — **webhook** khi task SUCCESS/FAILED (POST JSON, chữ ký HMAC, payload `task.finished`) — tích hợp Agent Gateway chủ động nhận kết quả
 
 Header phiên bản (mọi response): `X-API-Version`, `X-Catalog-Version`, `X-Constraints-Doc-Version` — so khớp với `src/api/contract.ts`.
 
