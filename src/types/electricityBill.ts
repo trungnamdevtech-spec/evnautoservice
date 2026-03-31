@@ -51,6 +51,11 @@ export interface ElectricityBill {
   provider?: ElectricityProvider;
   /** Chỉ NPC: id_hdon từ TraCuuHDSPC / XemChiTiet */
   npcIdHdon?: string;
+  /**
+   * Chỉ NPC: loại PDF — thông báo (XemChiTietHoaDon_NPC) vs hóa đơn thanh toán (XemHoaDon_NPC).
+   * Bản ghi cũ có thể thiếu field (coi như thông báo).
+   */
+  npcPdfKind?: "thong_bao" | "thanh_toan";
 
   // ── Liên kết với invoice_items ─────────────────────────────────────────────
   /** ID hóa đơn — CPC: ID_HDON; NPC: surrogate (npcInvoiceIdSurrogateFromIdHdon) */

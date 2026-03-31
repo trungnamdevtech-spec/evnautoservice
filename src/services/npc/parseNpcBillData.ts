@@ -79,3 +79,11 @@ export function parseNpcBillDataFromTraCuuBody(html: string): NpcTraCuuBillRow[]
   logger.warn("[npc-bill-data] Không khép được mảng billData (thiếu ']' tương ứng)");
   return [];
 }
+
+/**
+ * Hóa đơn thanh toán (PDF) thường là dòng cuối trong `billData` cho kỳ đó.
+ */
+export function selectNpcPaymentBillRowForKy(rows: NpcTraCuuBillRow[]): NpcTraCuuBillRow | null {
+  if (rows.length === 0) return null;
+  return rows[rows.length - 1]!;
+}

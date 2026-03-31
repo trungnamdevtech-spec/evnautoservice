@@ -12,6 +12,8 @@ import { InvoiceItemRepository } from "../db/invoiceItemRepository.js";
 import { ElectricityBillRepository } from "../db/electricityBillRepository.js";
 import { parseElectricityBillPdf } from "../services/pdf/ElectricityBillParser.js";
 import { logTaskPhase, logger } from "../core/logger.js";
+import { decryptNpcPassword } from "../services/crypto/npcCredentials.js";
+import { fetchNpcOnlinePaymentLink } from "../services/npc/npcOnlinePaymentLink.js";
 
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.stack ?? err.message;
@@ -131,6 +133,37 @@ export async function processNpcTask(
     const storage = normalizeStorageState(account.storageStateJson ?? undefined);
     context = await npcWorker.createDisposableContext(storage);
     page = await context.newPage();
+
+    if (task.payload.kind === "online_payment_link") {
+      const secret = env.npcCredentialsSecret.trim();
+      if (!secret) {
+        throw new Error("Thiếu NPC_CREDENTIALS_SECRET — không thể giải mã mật khẩu");
+      }
+      const password = decryptNpcPassword(account.passwordEncrypted, secret);
+      const step = env.npcStepTimeoutMs;
+      await npcWorker.prepareNpcIndexNpcSession(page, account, accId, password, taskHex, step);
+      const rawMa =
+        typeof task.payload.maKhachHang === "string" ? task.payload.maKhachHang.trim() : "";
+      const maKh = (rawMa || account.username).trim().toUpperCase();
+      logTaskPhase(taskHex, "NPC_ONLINE_PAYMENT", `Tra cứu link thanh toán ma=${maKh}`);
+      const onlinePaymentLink = await fetchNpcOnlinePaymentLink(page, maKh, step);
+      const storageAfter = await page.context().storageState();
+      await npcRepo.updateSession(accId, JSON.stringify(storageAfter), new Date());
+      await repo.markSuccess(taskId, {
+        downloadedAt: new Date().toISOString(),
+        lookupPayload: {
+          onlinePaymentLink: onlinePaymentLink as unknown as Record<string, unknown>,
+        },
+      });
+      logTaskPhase(
+        taskHex,
+        "SUCCESS",
+        onlinePaymentLink.ok
+          ? `NPC online_payment_link OK — ${account.username} ma=${maKh}`
+          : `NPC online_payment_link hoàn tất (nghiệp vụ) — ${account.username} ma=${maKh} code=${onlinePaymentLink.code}`,
+      );
+      return;
+    }
 
     const metadata = await npcWorker.runTask(page, task, taskHex);
     await repo.markSuccess(taskId, metadata);

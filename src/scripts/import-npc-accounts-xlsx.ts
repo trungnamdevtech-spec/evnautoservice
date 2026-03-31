@@ -11,6 +11,8 @@
  *   npm run import:npc-accounts:xlsx -- path/to/accounts.xlsx --sheet=Sheet1
  *
  * Hoặc đặt file `data/npc-accounts.xlsx` và bật AUTO_IMPORT_NPC_XLSX=true khi khởi động app (xem .env.example).
+ *
+ * **Thay thế toàn bộ** (xóa hết user cũ rồi nạp file mới): `npm run replace:npc-accounts:xlsx -- <file.xlsx> --confirm-delete-all`
  */
 
 import "dotenv/config";

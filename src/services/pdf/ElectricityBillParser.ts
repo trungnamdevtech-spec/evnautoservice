@@ -5,16 +5,20 @@ import type {
   ElectricityProvider,
   MeterReading,
   ParseResult,
+  ThreeFrames,
   TimeFramePricing,
 } from "../../types/electricityBill.js";
+import type { NpcPdfKind } from "../npc/npcElectricityBillId.js";
+import { npcBillKey } from "../npc/npcElectricityBillId.js";
 
 /**
  * Version parser — tăng khi thay đổi logic để biết cần re-parse những file cũ.
  * v2: Hỗ trợ PDF CSKH NPC (miền Bắc) — cùng khung bố cục CPC nhưng khác biệt nhỏ (Kỳ hóa đơn có dấu "-",
  * thứ tự dòng công tơ, serial trước "Khung giờ thấp điểm", Ngày ký có khoảng trắng, MST có "-").
  * v3: NPC một số mẫu dùng `Kỳ hóa đơn: Tháng mm/yyyy (...)` (không có chữ "Kỳ n") — cần `npc.kyTrongKy` từ tên file/API.
+ * v4: PDF hóa đơn thanh toán NPC (`XemHoaDon_NPC`) — mẫu HĐ GTGT / VAT, không có dòng `Kỳ hóa đơn` (khác PDF thông báo).
  */
-export const PARSER_VERSION = 3;
+export const PARSER_VERSION = 4;
 
 /** Dùng pdf-parse v2: new PDFParse({ data, verbosity }) → getText() → .text */
 async function extractPdfText(buffer: Buffer): Promise<string> {
@@ -124,7 +128,7 @@ export interface ParseElectricityBillPdfOptions {
    * Khi parse PDF từ CSKH NPC — gắn provider + billKey + npcIdHdon.
    * `kyTrongKy` (1–3): bắt buộc khi PDF dùng dòng `Tháng mm/yyyy` thay vì `Kỳ n - mm/yyyy` — lấy từ tên file `_ky{n}_` hoặc API TraCuu.
    */
-  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3 };
+  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3; npcPdfKind?: NpcPdfKind };
 }
 
 export async function parseElectricityBillPdf(
@@ -175,11 +179,17 @@ function extractFields(
   maKhachHang: string,
   maDonViQuanLy: string,
   meta: { maSogcs: string; kyHieu: string; soSery: string; ngayPhatHanh: Date },
-  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3 },
+  npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3; npcPdfKind?: NpcPdfKind },
 ): ElectricityBill {
   const now = new Date();
   const provider: ElectricityProvider = npc ? "EVN_NPC" : "EVN_CPC";
-  const billKey = npc ? `npc:${npc.npcIdHdon}` : `cpc:${invoiceId}`;
+  const npcKind: NpcPdfKind = npc?.npcPdfKind ?? "thong_bao";
+  const billKey = npc ? npcBillKey(npc.npcIdHdon, npcKind) : `cpc:${invoiceId}`;
+
+  /** Hóa đơn thanh toán (GTGT) — không có "Kỳ hóa đơn" như PDF thông báo tiền điện. */
+  if (npc?.npcPdfKind === "thanh_toan" && /HÓA ĐƠN GIÁ TRỊ GIA TĂNG/i.test(text)) {
+    return extractFieldsNpcVatPayment(text, pdfPath, invoiceId, maKhachHang, maDonViQuanLy, meta, npc, now, billKey, provider, npcKind);
+  }
 
   // ── Kỳ hóa đơn ────────────────────────────────────────────────────────────
   const kyMatch = text.match(RE.kyHoaDon);
@@ -314,6 +324,7 @@ function extractFields(
     billKey,
     provider,
     npcIdHdon: npc?.npcIdHdon,
+    ...(npc ? { npcPdfKind: npcKind } : {}),
     invoiceId,
     maKhachHang,
     maDonViQuanLy,
@@ -330,6 +341,169 @@ function extractFields(
       kyHieu: meta.kyHieu,
       soSery: meta.soSery,
       ngayPhatHanh: meta.ngayPhatHanh,
+      ngayKy,
+      nguoiKy,
+    },
+    pdfPath,
+    status: "parsed",
+    parseVersion: PARSER_VERSION,
+    parsedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * PDF hóa đơn thanh toán điện (GTGT) từ NPC — bố cục "HÓA ĐƠN GIÁ TRỊ GIA TĂNG", không có block "Kỳ hóa đơn" / khung giờ như thông báo tiền điện.
+ */
+function extractFieldsNpcVatPayment(
+  text: string,
+  pdfPath: string,
+  invoiceId: number,
+  maKhachHang: string,
+  maDonViQuanLy: string,
+  meta: { maSogcs: string; kyHieu: string; soSery: string; ngayPhatHanh: Date },
+  npc: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3; npcPdfKind?: NpcPdfKind },
+  now: Date,
+  billKey: string,
+  provider: ElectricityProvider,
+  npcKind: NpcPdfKind,
+): ElectricityBill {
+  const kyTrongKy = (npc.kyTrongKy ?? 1) as 1 | 2 | 3;
+
+  const periodM = text.match(
+    /Điện tiêu thụ tháng\s+(\d+)\s+năm\s+(\d{4})\s+từ\s+ngày\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+đến\s+ngày\s*(\d{1,2}\/\d{1,2}\/\d{4})/,
+  );
+  if (!periodM) {
+    throw new Error(
+      'PDF GTGT NPC: không tìm thấy dòng "Điện tiêu thụ tháng … năm … từ ngày … đến ngày …" — kiểm tra mẫu HĐ.',
+    );
+  }
+  const thang = parseInt(periodM[1]!, 10);
+  const nam = parseInt(periodM[2]!, 10);
+  const ngayBatDau = parseVnDate(periodM[3]!);
+  const ngayKetThuc = parseVnDate(periodM[4]!);
+  const soDays = Math.max(
+    1,
+    Math.floor((ngayKetThuc.getTime() - ngayBatDau.getTime()) / 86_400_000) + 1,
+  );
+
+  const kyBill = {
+    ky: kyTrongKy,
+    thang,
+    nam,
+    ngayBatDau,
+    ngayKetThuc,
+    soDays,
+  };
+
+  const mstSeller = text.match(/Mã số thuế \(Tax Code\):\s*([\d\-]+)/);
+  const tenSeller = text.match(/^(CÔNG TY ĐIỆN LỰC[^\n]+)/m);
+  const diaChiSeller = text.match(/Địa chỉ \(Address\):\s*([^\n]+)/);
+
+  const serialM = text.match(/Ký hiệu \(Serial\):\s*(\S+)/);
+  const soHoaDonNo = text.match(/Số \(No\):\s*(\d+)/);
+  const ngayPhatHanhM = text.match(
+    /Ngày \(Date\)\s+(\d{2})\s+tháng \(month\)\s+(\d{2})\s+năm \(year\)\s+(\d{4})/,
+  );
+  const ngayPhatHanh = ngayPhatHanhM
+    ? parseVnDate(`${ngayPhatHanhM[1]}/${ngayPhatHanhM[2]}/${ngayPhatHanhM[3]}`)
+    : meta.ngayPhatHanh;
+
+  const tenMua = text.match(/Tên đơn vị \(Company name\):\s*([^\n]+)/);
+  let diaChiBuyer = "";
+  const idxMaKh = text.indexOf("Mã khách hàng (Customer's Code):");
+  if (idxMaKh > 0) {
+    const before = text.slice(0, idxMaKh);
+    const addrs = [...before.matchAll(/Địa chỉ \(Address\):\s*([^\n]+)/g)];
+    const last = addrs[addrs.length - 1];
+    if (last?.[1]) diaChiBuyer = last[1].trim();
+  }
+
+  const mstBuyer = text.match(/Mã số thuế \(Tax code\):\s*([\d\s]+)/);
+
+  const donViDien = {
+    ten: (tenSeller?.[1] ?? "CÔNG TY ĐIỆN LỰC").replace(/\s+/g, " ").trim(),
+    tenDienLuc: "",
+    diaChi: diaChiSeller?.[1]?.trim() ?? "",
+    maSoThue: mstSeller?.[1]?.trim() ?? "",
+    soTaiKhoan: "",
+    nganHang: "",
+    dienThoai: text.match(/Điện thoại \(Phone Number\):\s*([\d\s]+)/)?.[1]?.trim() ?? "",
+  };
+
+  const khachHang = {
+    ten: tenMua?.[1]?.trim() ?? maKhachHang,
+    diaChi: diaChiBuyer,
+    dienThoai: "",
+    email: "",
+    maSoThue: mstBuyer?.[1]?.replace(/\s+/g, "").trim() ?? "",
+    diaChiSuDungDien: "",
+    mucDichSuDung: [] as string[],
+    capDienAp: "",
+  };
+
+  const zr = (): MeterReading => ({ chiSoMoi: 0, chiSoCu: 0, tieuThu: 0 });
+  const zp = (): TimeFramePricing => ({ donGia: 0, sanLuong: 0, thanhTien: 0 });
+  const chiSoDien: ThreeFrames<MeterReading> = { binhThuong: zr(), caoDiem: zr(), thapDiem: zr() };
+  const giaDien: ThreeFrames<TimeFramePricing> = { binhThuong: zp(), caoDiem: zp(), thapDiem: zp() };
+
+  const kwhM = text.match(/\s+kWh\s+([\d.]+)\s+\S+\s+([\d.]+)/);
+  const kwhTieuThu = kwhM ? parseVnInt(kwhM[1]!) : 0;
+
+  const tienHangM = text.match(/Cộng tiền hàng\s*\([^)]*\)\s*:?\s*([\d.]+)/);
+  const tienThueM = text.match(/Tiền thuế GTGT\s*\([^)]*\)\s*:?\s*([\d.]+)/);
+  const thueSuatM = text.match(/Thuế suất GTGT\s*\([^)]*\)\s*:\s*(\d+)%/);
+  const tongTTM = text.match(/Tổng cộng tiền thanh toán[\s\S]{0,120}?:\s*([\d.]+)/);
+  const bangChuM = text.match(/Số tiền bằng chữ\s*\([^)]*\)\s*:\s*(.+?)(?:\nNgười mua|\nĐược ký|$)/s);
+
+  if (!tongTTM?.[1]) {
+    throw new Error("PDF GTGT NPC: không tìm thấy Tổng cộng tiền thanh toán");
+  }
+
+  const tongKet = {
+    tongDienNangTieuThu: kwhTieuThu,
+    tongTienDienChuaThue: tienHangM ? parseVnInt(tienHangM[1]!) : 0,
+    thueSuatGTGT: thueSuatM ? parseInt(thueSuatM[1]!, 10) : 0,
+    tienThueGTGT: tienThueM ? parseVnInt(tienThueM[1]!) : 0,
+    tongTienThanhToan: parseVnInt(tongTTM[1]!),
+    bangChu: bangChuM?.[1]?.replace(/\s+/g, " ").trim() ?? "",
+  };
+
+  const ngayKyMatch = text.match(RE.ngayKy);
+  const ngayKy = ngayKyMatch
+    ? parseVnDate(`${ngayKyMatch[1]}/${ngayKyMatch[2]}/${ngayKyMatch[3]}`)
+    : ngayPhatHanh;
+  const nguoiKyMatch = text.match(/Được ký bởi:\s*((?:[^\n]|\n(?!Ngày ký))+)/);
+  const nguoiKy = nguoiKyMatch
+    ? nguoiKyMatch[1]!.replace(/\s+/g, " ").replace(/–/g, "-").trim()
+    : donViDien.ten;
+
+  const hanM = text.match(/Hạn thanh toán\s*\n?\s*(\d{2}\/\d{2}\/\d{4})/);
+  const hanThanhToan = hanM ? parseVnDate(hanM[1]!) : ngayPhatHanh;
+
+  return {
+    billKey,
+    provider,
+    npcIdHdon: npc.npcIdHdon,
+    npcPdfKind: npcKind,
+    invoiceId,
+    maKhachHang,
+    maDonViQuanLy,
+    kyBill,
+    donViDien,
+    khachHang,
+    congTo: { soHieu: "", heSoNhan: 1 },
+    chiSoDien,
+    giaDien,
+    tongKet,
+    hanThanhToan,
+    /** HĐ GTGT: ký hiệu / số trên mẫu VAT — không trùng nghĩa với MA_SOGCS CPC. */
+    soHoaDon: {
+      maSogcs: "",
+      kyHieu: serialM?.[1]?.trim() ?? meta.kyHieu,
+      soSery: soHoaDonNo?.[1]?.trim() ?? meta.soSery,
+      ngayPhatHanh,
       ngayKy,
       nguoiKy,
     },

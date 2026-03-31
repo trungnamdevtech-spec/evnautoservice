@@ -1,6 +1,13 @@
 import { Hono } from "hono";
 import { ElectricityBillRepository } from "../../db/electricityBillRepository.js";
+import type { NpcPdfKind } from "../../services/npc/npcElectricityBillId.js";
 import { getRegionFromQuery } from "../regionQuery.js";
+
+function parseNpcBillKindQuery(q: string | undefined): NpcPdfKind {
+  const v = (q ?? "").toLowerCase().trim();
+  if (v === "tt" || v === "thanh_toan" || v === "payment") return "thanh_toan";
+  return "thong_bao";
+}
 
 const repo = new ElectricityBillRepository();
 
@@ -102,7 +109,7 @@ billsRouter.get("/due-soon", async (c) => {
   return c.json({ region, dueSoonDays: days, total: bills.length, data: bills });
 });
 
-// ── GET /bills/npc/:idHdon — electricity_bills nguồn NPC (id_hdon URL-encode) ─
+// ── GET /bills/npc/:idHdon?kind=tt — electricity_bills NPC (thông báo mặc định; kind=tt = thanh toán) ─
 billsRouter.get("/npc/:idHdon", async (c) => {
   let idHdon: string;
   try {
@@ -110,7 +117,8 @@ billsRouter.get("/npc/:idHdon", async (c) => {
   } catch {
     return c.json({ error: "idHdon không hợp lệ" }, 400);
   }
-  const bill = await repo.findByNpcIdHdon(idHdon);
+  const kind = parseNpcBillKindQuery(c.req.query("kind"));
+  const bill = await repo.findByNpcIdHdon(idHdon, kind);
   if (!bill) {
     return c.json({ error: `Không tìm thấy electricity_bills cho id_hdon` }, 404);
   }

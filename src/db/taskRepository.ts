@@ -132,6 +132,41 @@ export class TaskRepository {
     return res.insertedId;
   }
 
+  /**
+   * Task lấy link thanh toán trực tuyến (apicskhthanhtoan) — `payload.kind` = `online_payment_link`.
+   * Worker xử lý qua `processNpcTask` (không chạy TraCuu PDF).
+   */
+  async insertPendingNpcOnlinePaymentLink(payload: Record<string, unknown>): Promise<ObjectId> {
+    const c = await this.col();
+    const now = new Date();
+    const res = await c.insertOne({
+      status: "PENDING",
+      provider: "EVN_NPC",
+      payload: { kind: "online_payment_link", ...payload },
+      createdAt: now,
+      updatedAt: now,
+    } as ScrapeTask);
+    return res.insertedId;
+  }
+
+  /** Tránh trùng job PENDING/RUNNING cùng tài khoản + mã KH tra cứu link thanh toán. */
+  async findActiveNpcOnlinePaymentLink(
+    npcAccountIdHex: string,
+    maKhachHangNormalized: string,
+  ): Promise<ScrapeTask | null> {
+    const c = await this.col();
+    return c.findOne({
+      status: { $in: ["PENDING", "RUNNING"] },
+      provider: "EVN_NPC",
+      "payload.kind": "online_payment_link",
+      $or: [
+        { "payload.npcAccountId": npcAccountIdHex },
+        { "payload.accountId": npcAccountIdHex },
+      ],
+      "payload.maKhachHang": maKhachHangNormalized,
+    });
+  }
+
   async findActiveNpcForPeriod(
     npcAccountIdHex: string,
     ky: string,

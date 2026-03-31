@@ -135,3 +135,34 @@ export async function importNpcAccountsFromXlsxFile(
     parse,
   };
 }
+
+export interface ReplaceNpcAccountsFromXlsxResult extends NpcXlsxImportDbResult {
+  /** Số bản ghi đã xóa trước khi nạp lại */
+  deleted: number;
+}
+
+/**
+ * Thay thế toàn bộ tài khoản NPC: đọc Excel trước — **chỉ khi có ít nhất một dòng hợp lệ**
+ * mới xóa hết collection rồi insert (tránh DB trống vì file sai).
+ */
+export async function replaceAllNpcAccountsFromXlsxFile(
+  repo: InstanceType<typeof NpcAccountRepository>,
+  absPath: string,
+  sheetName?: string,
+): Promise<ReplaceNpcAccountsFromXlsxResult> {
+  const parse = await parseNpcAccountsXlsx(absPath, sheetName);
+  if (parse.rows.length === 0) {
+    throw new Error(
+      "Không có dòng dữ liệu hợp lệ trong Excel — không thực hiện xóa (tránh làm trống DB).",
+    );
+  }
+  const deleted = await repo.deleteAll();
+  const result = await repo.insertManyAccounts(parse.rows);
+  return {
+    deleted,
+    inserted: result.inserted,
+    skipped: result.skipped,
+    errors: result.errors,
+    parse,
+  };
+}

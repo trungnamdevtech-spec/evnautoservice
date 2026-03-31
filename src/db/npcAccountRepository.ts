@@ -164,6 +164,16 @@ export class NpcAccountRepository {
     );
   }
 
+  /**
+   * Xóa **toàn bộ** bản ghi `npc_accounts` (session/mật khẩu mã hóa của mọi user).
+   * Chỉ gọi từ thao tác vận hành có xác nhận (CLI/API có cờ env).
+   */
+  async deleteAll(): Promise<number> {
+    const c = await this.col();
+    const r = await c.deleteMany({});
+    return r.deletedCount ?? 0;
+  }
+
   /** Thêm nhiều tài khoản (import hàng loạt). Trùng username → bỏ qua (skip). */
   async insertManyAccounts(
     rows: Array<{ username: string; passwordPlain: string; label?: string }>,

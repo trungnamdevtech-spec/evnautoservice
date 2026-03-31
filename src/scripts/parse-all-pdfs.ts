@@ -2,7 +2,7 @@
  * Scan toàn bộ thư mục output/pdfs, parse từng file PDF và lưu vào MongoDB.
  *
  * - CPC: `output/pdfs/{org}/..._{invoiceId}_tbao.pdf` + metadata từ invoice_items.
- * - NPC: `output/pdfs/npc/{maKh}_{year}-{month}_ky{n}_{id_hdon}.pdf` — parse trực tiếp (provider EVN_NPC).
+ * - NPC: `.../npc/{maKh}_{...}_ky{n}_{id_hdon}.pdf` (thông báo) hoặc `..._id_hdon_tt.pdf` (hóa đơn thanh toán).
  *
  * Usage:
  *   node --import tsx src/scripts/parse-all-pdfs.ts
@@ -18,7 +18,7 @@ import { InvoiceItemRepository } from "../db/invoiceItemRepository.js";
 import { ElectricityBillRepository } from "../db/electricityBillRepository.js";
 import { parseElectricityBillPdf, PARSER_VERSION } from "../services/pdf/ElectricityBillParser.js";
 import { npcInvoiceIdSurrogateFromIdHdon } from "../services/npc/npcElectricityBillId.js";
-import { isNpcPdfPath, parseNpcPdfFilename } from "../services/npc/npcPdfFilename.js";
+import { isNpcPdfPath, npcBillKeyFromParsedFilename, parseNpcPdfFilename } from "../services/npc/npcPdfFilename.js";
 import { env } from "../config/env.js";
 
 const FORCE_REPARSE = process.argv.includes("--force");
@@ -68,14 +68,19 @@ async function main(): Promise<void> {
 
   let npcToProcess = npcFiles;
   if (!FORCE_REPARSE && npcFiles.length > 0) {
-    const idHdons = npcFiles
-      .map((f) => parseNpcPdfFilename(f)?.idHdon)
-      .filter((x): x is string => Boolean(x));
-    const pendingNpc = await billRepo.findPendingNpcParse(idHdons);
-    npcToProcess = npcFiles.filter((f) => {
-      const p = parseNpcPdfFilename(f);
-      return p !== null && pendingNpc.has(p.idHdon);
-    });
+    npcToProcess = [];
+    for (const f of npcFiles) {
+      const meta = parseNpcPdfFilename(f);
+      if (!meta) {
+        npcToProcess.push(f);
+        continue;
+      }
+      const billKey = npcBillKeyFromParsedFilename(meta);
+      const doc = await billRepo.findByBillKey(billKey);
+      if (!doc || doc.status !== "parsed" || doc.parseVersion !== PARSER_VERSION) {
+        npcToProcess.push(f);
+      }
+    }
     console.info(
       `[parse-pdfs] NPC cần parse: ${npcToProcess.length}/${npcFiles.length} (đã có bản parsed cùng version).`,
     );
@@ -98,7 +103,7 @@ async function main(): Promise<void> {
             skipped++;
             return;
           }
-          const invSurrogate = npcInvoiceIdSurrogateFromIdHdon(meta.idHdon);
+          const invSurrogate = npcInvoiceIdSurrogateFromIdHdon(meta.idHdon, meta.kind);
           const kyNum = parseInt(meta.ky, 10);
           const kyTrongKy = (kyNum >= 1 && kyNum <= 3 ? kyNum : 1) as 1 | 2 | 3;
           const result = await parseElectricityBillPdf(
@@ -112,14 +117,20 @@ async function main(): Promise<void> {
               soSery: "",
               ngayPhatHanh: new Date(),
             },
-            { npc: { npcIdHdon: meta.idHdon, kyTrongKy } },
+            { npc: { npcIdHdon: meta.idHdon, kyTrongKy, npcPdfKind: meta.kind } },
           );
           if (result.success && result.bill) {
             await billRepo.upsert(result.bill);
             console.info(`[parse-pdfs] ✓ NPC id_hdon=${meta.idHdon.slice(0, 16)}… — hạn TT: ${formatDate(result.bill.hanThanhToan)}`);
             success++;
           } else {
-            await billRepo.markNpcError(meta.idHdon, invSurrogate, filePath, result.error ?? "unknown");
+            await billRepo.markNpcError(
+              meta.idHdon,
+              invSurrogate,
+              filePath,
+              result.error ?? "unknown",
+              meta.kind,
+            );
             console.warn(`[parse-pdfs] ✗ NPC ${meta.idHdon.slice(0, 12)}…: ${result.error}`);
             failed++;
           }

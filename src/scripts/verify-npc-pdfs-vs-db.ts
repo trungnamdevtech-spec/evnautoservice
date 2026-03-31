@@ -136,7 +136,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const invSurrogate = npcInvoiceIdSurrogateFromIdHdon(meta.idHdon);
+    const invSurrogate = npcInvoiceIdSurrogateFromIdHdon(meta.idHdon, meta.kind);
     const kyNum = parseInt(meta.ky, 10);
     const kyTrongKy = (kyNum >= 1 && kyNum <= 3 ? kyNum : 1) as 1 | 2 | 3;
     const fresh = await parseElectricityBillPdf(
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
         soSery: "",
         ngayPhatHanh: new Date(),
       },
-      { npc: { npcIdHdon: meta.idHdon, kyTrongKy } },
+      { npc: { npcIdHdon: meta.idHdon, kyTrongKy, npcPdfKind: meta.kind } },
     );
 
     if (!fresh.success || !fresh.bill) {
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const dbBill = await billRepo.findByNpcIdHdon(meta.idHdon);
+    const dbBill = await billRepo.findByNpcIdHdon(meta.idHdon, meta.kind);
     if (!dbBill) {
       console.warn(`[verify-npc] ✗ Không có bản ghi DB cho id_hdon=${meta.idHdon.slice(0, 20)}…`);
       fail++;

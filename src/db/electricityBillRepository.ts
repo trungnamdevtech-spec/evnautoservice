@@ -1,6 +1,8 @@
 import type { Collection, Filter, Sort } from "mongodb";
 import { getMongoDb } from "./mongo.js";
 import type { ElectricityBill, ElectricityProvider } from "../types/electricityBill.js";
+import type { NpcPdfKind } from "../services/npc/npcElectricityBillId.js";
+import { npcBillKey } from "../services/npc/npcElectricityBillId.js";
 import { PARSER_VERSION } from "../services/pdf/ElectricityBillParser.js";
 import type { ElectricityBillRegionScope } from "./electricityBillRegionScope.js";
 import { mergeFilterWithRegion } from "./electricityBillRegionScope.js";
@@ -27,6 +29,11 @@ export interface BillQueryOptions {
   status?: ElectricityBill["status"];
   limit?: number;
   sort?: Sort;
+  /**
+   * Chỉ EVN_NPC: lọc loại PDF — thông báo vs HĐ GTGT thanh toán.
+   * `all` hoặc không truyền: cả hai (kèm bản ghi cũ không có `npcPdfKind`).
+   */
+  npcPdfKind?: NpcPdfKind | "all";
 }
 
 export class ElectricityBillRepository {
@@ -133,16 +140,23 @@ export class ElectricityBillRepository {
   }
 
   /** Đánh dấu parse lỗi cho một bản ghi NPC (theo id_hdon). */
-  async markNpcError(npcIdHdon: string, invoiceId: number, pdfPath: string, error: string): Promise<void> {
+  async markNpcError(
+    npcIdHdon: string,
+    invoiceId: number,
+    pdfPath: string,
+    error: string,
+    kind: NpcPdfKind = "thong_bao",
+  ): Promise<void> {
     const c = await this.col();
     const now = new Date();
-    const billKey = `npc:${npcIdHdon}`;
+    const billKey = npcBillKey(npcIdHdon, kind);
     await c.updateOne(
-      { $or: [{ billKey }, { npcIdHdon }] },
+      { billKey },
       {
         $set: {
           billKey,
           npcIdHdon,
+          npcPdfKind: kind,
           provider: "EVN_NPC" as const,
           invoiceId,
           pdfPath,
@@ -175,31 +189,61 @@ export class ElectricityBillRepository {
     });
   }
 
-  /** Tra cứu bản ghi đã parse theo id_hdon NPC */
-  async findByNpcIdHdon(idHdon: string): Promise<ElectricityBill | null> {
+  /** Tra cứu theo `billKey` (CPC/NPC). */
+  async findByBillKey(billKey: string): Promise<ElectricityBill | null> {
     const c = await this.col();
-    return c.findOne({ $or: [{ npcIdHdon: idHdon }, { billKey: `npc:${idHdon}` }] });
+    return c.findOne({ billKey });
+  }
+
+  /**
+   * Tra cứu bản ghi đã parse theo id_hdon NPC.
+   * `thong_bao` (mặc định): PDF thông báo — XemChiTietHoaDon_NPC.
+   * `thanh_toan`: PDF hóa đơn thanh toán — XemHoaDon_NPC.
+   */
+  async findByNpcIdHdon(idHdon: string, kind: NpcPdfKind = "thong_bao"): Promise<ElectricityBill | null> {
+    const c = await this.col();
+    if (kind === "thanh_toan") {
+      return c.findOne({ billKey: npcBillKey(idHdon, "thanh_toan") });
+    }
+    return c.findOne({
+      $or: [
+        { billKey: npcBillKey(idHdon, "thong_bao") },
+        {
+          npcIdHdon: idHdon,
+          $or: [{ npcPdfKind: { $exists: false } }, { npcPdfKind: "thong_bao" }],
+        },
+      ],
+    });
   }
 
   /**
    * Hóa đơn NPC đã parse cho đúng một KH + kỳ/tháng/năm (một bản mới nhất nếu có trùng).
    * Dùng API agent: có sẵn trong DB hay cần quét.
+   * `npcPdfKind`: `thong_bao` (mặc định) = PDF thông báo; `thanh_toan` = HĐ GTGT (XemHoaDon_NPC).
    */
   async findNpcParsedByCustomerPeriod(
     maKhachHang: string,
     ky: 1 | 2 | 3,
     thang: number,
     nam: number,
+    npcPdfKind: NpcPdfKind = "thong_bao",
   ): Promise<ElectricityBill | null> {
     const c = await this.col();
+    const base = {
+      provider: "EVN_NPC" as const,
+      maKhachHang: maKhachHang.toUpperCase(),
+      status: "parsed" as const,
+      "kyBill.ky": ky,
+      "kyBill.thang": thang,
+      "kyBill.nam": nam,
+    };
+    if (npcPdfKind === "thanh_toan") {
+      return c.findOne({ ...base, npcPdfKind: "thanh_toan" }, { sort: { parsedAt: -1, updatedAt: -1 } });
+    }
     return c.findOne(
       {
-        provider: "EVN_NPC",
-        maKhachHang: maKhachHang.toUpperCase(),
-        status: "parsed",
-        "kyBill.ky": ky,
-        "kyBill.thang": thang,
-        "kyBill.nam": nam,
+        ...base,
+        $or: [{ npcPdfKind: { $exists: false } }, { npcPdfKind: "thong_bao" }],
       },
       { sort: { parsedAt: -1, updatedAt: -1 } },
     );
@@ -238,6 +282,14 @@ export class ElectricityBillRepository {
       if (opts.hanThanhToanAfter) filter.hanThanhToan.$gte = opts.hanThanhToanAfter;
     }
 
+    if (opts.provider === "EVN_NPC" && opts.npcPdfKind && opts.npcPdfKind !== "all") {
+      if (opts.npcPdfKind === "thanh_toan") {
+        filter.npcPdfKind = "thanh_toan";
+      } else {
+        filter.$or = [{ npcPdfKind: { $exists: false } }, { npcPdfKind: "thong_bao" }];
+      }
+    }
+
     return c
       .find(filter)
       .sort(opts.sort ?? { hanThanhToan: 1 })
@@ -263,7 +315,7 @@ export class ElectricityBillRepository {
     return new Set(invoiceIds.filter((id) => !parsedSet.has(id)));
   }
 
-  /** id_hdon NPC chưa parse hoặc cần re-parse (version cũ / lỗi). */
+  /** id_hdon NPC chưa parse hoặc cần re-parse (version cũ / lỗi) — chỉ bản ghi thông báo (không tính `npcPdfKind=thanh_toan`). */
   async findPendingNpcParse(idHdons: string[]): Promise<Set<string>> {
     if (idHdons.length === 0) return new Set(idHdons);
     const c = await this.col();
@@ -273,6 +325,7 @@ export class ElectricityBillRepository {
           npcIdHdon: { $in: idHdons },
           status: "parsed",
           parseVersion: PARSER_VERSION,
+          $or: [{ npcPdfKind: { $exists: false } }, { npcPdfKind: "thong_bao" }],
         },
         { projection: { npcIdHdon: 1 } },
       )

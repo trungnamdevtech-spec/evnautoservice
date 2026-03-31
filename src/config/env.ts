@@ -99,6 +99,16 @@ export const env = {
   /** Origin CSKH NPC — dùng cho API same-origin sau đăng nhập */
   evnNpcBaseUrl: process.env.EVN_NPC_BASE_URL ?? "https://cskh.npc.com.vn",
   /**
+   * Đường dẫn trang "Thanh toán trực tuyến — Thanh toán tiền điện" (sau đăng nhập).
+   * @see https://cskh.npc.com.vn/DichVuTrucTuyen/ThanhToanTrucTuyenNPC_TTTD
+   */
+  evnNpcThanhToanTrucTuyenPath:
+    process.env.EVN_NPC_THANH_TOAN_TRUC_TUYEN_PATH ?? "DichVuTrucTuyen/ThanhToanTrucTuyenNPC_TTTD",
+  /**
+   * `true`: sau khi vào IndexNPC và lưu session, gọi thêm POST Tra cứu thanh toán trực tuyến và gắn `onlinePaymentLink` vào metadata task.
+   */
+  npcFetchOnlinePaymentLinkAfterLogin: parseBoolSafe(process.env.NPC_FETCH_ONLINE_PAYMENT_LINK_AFTER_LOGIN, false),
+  /**
    * Bí mật dài (≥16 ký tự khuyến nghị) để mã hóa mật khẩu lưu trong npc_accounts.
    * Bắt buộc khi gọi API thêm tài khoản NPC.
    */
@@ -141,4 +151,18 @@ export const env = {
    */
   npcHumanJitterMinMs: Math.max(0, parseIntSafe(process.env.NPC_HUMAN_JITTER_MIN_MS, 120)),
   npcHumanJitterMaxMs: Math.max(0, parseIntSafe(process.env.NPC_HUMAN_JITTER_MAX_MS, 500)),
+  /** `false`: chỉ tải PDF thông báo (XemChiTiet), không gọi XemHoaDon_NPC. */
+  npcDownloadPaymentPdf: parseBoolSafe(process.env.NPC_DOWNLOAD_PAYMENT_PDF, true),
+  /**
+   * `true`: cho phép POST ` /api/npc/accounts/replace-bulk` (xóa hết npc_accounts rồi nạp JSON).
+   * Mặc định tắt — chỉ bật tạm khi vận hành; nên dùng CLI `replace:npc-accounts:xlsx` cho file Excel.
+   */
+  npcAllowAccountReplaceBulk: parseBoolSafe(process.env.NPC_ALLOW_ACCOUNT_REPLACE_BULK, false),
+  /** `false`: tắt POST `/api/npc/online-payment-link` (mở Playwright — tốn tài nguyên). */
+  npcOnlinePaymentLinkApiEnabled: parseBoolSafe(process.env.NPC_ONLINE_PAYMENT_LINK_API_ENABLED, true),
+  /**
+   * `true`: cho phép body `{ "sync": true }` trên POST `/api/npc/online-payment-link` chạy đồng bộ (dễ timeout).
+   * Mặc định tắt — agent dùng async (202 + poll task).
+   */
+  npcOnlinePaymentLinkSyncApiEnabled: parseBoolSafe(process.env.NPC_ONLINE_PAYMENT_LINK_SYNC_API_ENABLED, false),
 };

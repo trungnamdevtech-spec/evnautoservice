@@ -15,44 +15,38 @@ import { parseNpcAccountIdFromPayload } from "./npcTaskPayload.js";
 import { logTaskPhase, logger } from "../../core/logger.js";
 import { npcHumanPause } from "../../services/npc/npcBrowserLikeHeaders.js";
 import { fetchNpcTraCuuHdsPc } from "../../services/npc/NpcTraCuuHDSPCClient.js";
-import { parseNpcBillDataFromTraCuuBody } from "../../services/npc/parseNpcBillData.js";
-import { postNpcXemChiTietHoaDon } from "../../services/npc/NpcXemChiTietHoaDonClient.js";
+import { parseNpcBillDataFromTraCuuBody, selectNpcPaymentBillRowForKy } from "../../services/npc/parseNpcBillData.js";
+import { postNpcXemChiTietHoaDon, postNpcXemHoaDonNpc } from "../../services/npc/NpcXemChiTietHoaDonClient.js";
 import { saveNpcInvoicePdf } from "../../services/npc/saveNpcInvoicePdf.js";
 import { ElectricityBillRepository } from "../../db/electricityBillRepository.js";
 import { parseElectricityBillPdf } from "../../services/pdf/ElectricityBillParser.js";
-import { npcInvoiceIdSurrogateFromIdHdon } from "../../services/npc/npcElectricityBillId.js";
+import { npcInvoiceIdSurrogateFromIdHdon, type NpcPdfKind } from "../../services/npc/npcElectricityBillId.js";
+import {
+  fetchNpcOnlinePaymentLink,
+  type NpcOnlinePaymentLinkResult,
+} from "../../services/npc/npcOnlinePaymentLink.js";
+import type { ObjectId } from "mongodb";
+import type { NpcAccount } from "../../types/npcAccount.js";
 
 export class EVNNPCWorker extends BaseWorker {
   private readonly npcRepo = new NpcAccountRepository();
   private readonly billRepo = new ElectricityBillRepository();
 
-  async runTask(page: Page, task: ScrapeTask, traceTaskId: string): Promise<InvoiceDownloadMetadata> {
-    const step = env.npcStepTimeoutMs;
+  /**
+   * Đăng nhập (nếu cần) và đảm bảo đang ở IndexNPC; lưu `storageState` vào DB.
+   * Dùng lại cho task quét và API lấy link thanh toán trực tuyến.
+   */
+  async prepareNpcIndexNpcSession(
+    page: Page,
+    account: NpcAccount,
+    accountId: ObjectId,
+    password: string,
+    traceTaskId: string,
+    step: number,
+  ): Promise<void> {
     const trace = (phase: string, detail?: string) => logTaskPhase(traceTaskId, phase, detail);
-
-    const accountId = parseNpcAccountIdFromPayload(task.payload);
-    const account = await this.npcRepo.findById(accountId);
-    if (!account) {
-      throw new Error(`Không tìm thấy npc_accounts._id=${accountId.toHexString()}`);
-    }
-    if (!account.enabled) {
-      throw new Error(`Tài khoản NPC đã tắt: ${account.username}`);
-    }
-    if (account.disabledReason === "wrong_password") {
-      throw new Error(
-        `Tài khoản NPC đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`,
-      );
-    }
-
-    const secret = env.npcCredentialsSecret.trim();
-    if (!secret) {
-      throw new Error("Thiếu NPC_CREDENTIALS_SECRET — không thể giải mã mật khẩu");
-    }
-    const password = decryptNpcPassword(account.passwordEncrypted, secret);
-
     trace("NPC_ACCOUNT", account.username);
 
-    /** Thử session trực tiếp trên IndexNPC — tránh popup marketing thường gặp ở trang chủ `/home`. */
     await this.runStep("npc:probeSession", step, async () => {
       await page.goto(env.evnNpcIndexNpcUrl, { waitUntil: "domcontentloaded", timeout: step });
       await new Promise<void>((r) => setTimeout(r, 500));
@@ -111,6 +105,42 @@ export class EVNNPCWorker extends BaseWorker {
     const storageJson = JSON.stringify(storage);
     await this.npcRepo.updateSession(accountId, storageJson, new Date());
     logger.debug(`[task ${traceTaskId}] Đã lưu storageState cho NPC ${account.username}`);
+  }
+
+  async runTask(page: Page, task: ScrapeTask, traceTaskId: string): Promise<InvoiceDownloadMetadata> {
+    const step = env.npcStepTimeoutMs;
+    const trace = (phase: string, detail?: string) => logTaskPhase(traceTaskId, phase, detail);
+
+    const accountId = parseNpcAccountIdFromPayload(task.payload);
+    const account = await this.npcRepo.findById(accountId);
+    if (!account) {
+      throw new Error(`Không tìm thấy npc_accounts._id=${accountId.toHexString()}`);
+    }
+    if (!account.enabled) {
+      throw new Error(`Tài khoản NPC đã tắt: ${account.username}`);
+    }
+    if (account.disabledReason === "wrong_password") {
+      throw new Error(
+        `Tài khoản NPC đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`,
+      );
+    }
+
+    const secret = env.npcCredentialsSecret.trim();
+    if (!secret) {
+      throw new Error("Thiếu NPC_CREDENTIALS_SECRET — không thể giải mã mật khẩu");
+    }
+    const password = decryptNpcPassword(account.passwordEncrypted, secret);
+
+    await this.prepareNpcIndexNpcSession(page, account, accountId, password, traceTaskId, step);
+
+    let onlinePaymentLink: NpcOnlinePaymentLinkResult | undefined;
+    if (env.npcFetchOnlinePaymentLinkAfterLogin) {
+      await npcHumanPause();
+      trace("NPC_ONLINE_PAYMENT", "Tra cứu link thanh toán trực tuyến (apicskhthanhtoan)");
+      onlinePaymentLink = await fetchNpcOnlinePaymentLink(page, account.username.trim().toUpperCase(), step);
+      const storage2 = await page.context().storageState();
+      await this.npcRepo.updateSession(accountId, JSON.stringify(storage2), new Date());
+    }
 
     const { period, month, year } = resolveNpcPeriod(task);
     const kyList = resolveNpcKyList(task, period);
@@ -131,6 +161,17 @@ export class EVNNPCWorker extends BaseWorker {
     const xemChiTietResults: Array<{
       ky: string;
       id_hdon: string;
+      status: number;
+      statusText: string;
+      bodyLength: number;
+      bodyPreview?: string;
+      pdfSavedPath?: string;
+      pdfBytes?: number;
+    }> = [];
+    const xemHoaDonNpcResults: Array<{
+      ky: string;
+      id_hdon: string;
+      npcPdfKind: NpcPdfKind;
       status: number;
       statusText: string;
       bodyLength: number;
@@ -248,6 +289,103 @@ export class EVNNPCWorker extends BaseWorker {
           pdfBytes,
         });
       }
+
+      /**
+       * HĐ GTGT/thanh toán: cùng `ky`/`thang`/`nam` như TraCuu và XemChiTiet thông báo — không có task/API
+       * riêng “chỉ tải GTGT”; luôn đi kèp sau các PDF thông báo của kỳ đó (khi bật env).
+       */
+      if (env.npcDownloadPaymentPdf && r.status < 400 && bills.length > 0) {
+        const paymentRow = selectNpcPaymentBillRowForKy(bills);
+        const idPay = paymentRow?.id_hdon?.trim();
+        if (paymentRow && idPay) {
+          const maKhPay = (paymentRow.customer_code ?? account.username).trim();
+          await npcHumanPause();
+          npcPdfAttempted++;
+          const payDetail = await this.runStep(`npc:xemHoaDon:ky${ky}:${idPay.slice(0, 12)}`, step, () =>
+            postNpcXemHoaDonNpc(page, {
+              idHdon: idPay,
+              maKh: maKhPay,
+              ky,
+              thang: thangNum,
+              nam: year,
+            }),
+          );
+          if (payDetail.status >= 400) {
+            logger.warn(
+              `[task ${traceTaskId}] XemHoaDon_NPC id_hdon=${idPay.slice(0, 16)}… HTTP ${payDetail.status}`,
+            );
+          }
+          let pdfSavedPath: string | undefined;
+          let pdfBytes: number | undefined;
+          let bodyPreview: string | undefined;
+          const payLen = payDetail.kind === "pdf" ? payDetail.buffer.length : payDetail.body.length;
+          if (payDetail.kind === "pdf") {
+            pdfSavedPath = await saveNpcInvoicePdf(
+              payDetail.buffer,
+              maKhPay,
+              year,
+              month,
+              String(ky),
+              idPay,
+              "thanh_toan",
+            );
+            pdfBytes = payDetail.buffer.length;
+            npcPdfSaved++;
+            trace("NPC_PDF_TT", `${pdfSavedPath} (${pdfBytes} bytes)`);
+            const invSurrogate = npcInvoiceIdSurrogateFromIdHdon(idPay, "thanh_toan");
+            const series = typeof paymentRow.series === "string" ? paymentRow.series : "";
+            parseAttempted++;
+            const k2 = parseInt(String(ky), 10);
+            const kyTrongKy2 = (k2 >= 1 && k2 <= 3 ? k2 : 1) as 1 | 2 | 3;
+            const pr = await parseElectricityBillPdf(
+              pdfSavedPath,
+              invSurrogate,
+              maKhPay.toUpperCase(),
+              "NPC",
+              {
+                maSogcs: series,
+                kyHieu: series,
+                soSery: "",
+                ngayPhatHanh: new Date(),
+              },
+              { npc: { npcIdHdon: idPay, kyTrongKy: kyTrongKy2, npcPdfKind: "thanh_toan" } },
+            );
+            if (pr.success && pr.bill) {
+              await this.billRepo.upsert(pr.bill);
+              parseSuccess++;
+              trace("NPC_PARSE_TT", `electricity_bills billKey=${pr.bill.billKey ?? "?"}`);
+            } else {
+              parseFailed++;
+              await this.billRepo.markNpcError(
+                idPay,
+                invSurrogate,
+                pdfSavedPath,
+                pr.error ?? "parse failed",
+                "thanh_toan",
+              );
+              logger.warn(`[task ${traceTaskId}] Parse PDF NPC (TT) id_hdon=${idPay.slice(0, 12)}… — ${pr.error}`);
+            }
+          } else {
+            bodyPreview = payDetail.body.slice(0, 4096);
+            if (payDetail.status < 400) {
+              logger.warn(
+                `[task ${traceTaskId}] XemHoaDon_NPC trả HTML/text (chưa tách PDF) id_hdon=${idPay.slice(0, 12)}…`,
+              );
+            }
+          }
+          xemHoaDonNpcResults.push({
+            ky,
+            id_hdon: idPay,
+            npcPdfKind: "thanh_toan",
+            status: payDetail.status,
+            statusText: payDetail.statusText,
+            bodyLength: payLen,
+            bodyPreview,
+            pdfSavedPath,
+            pdfBytes,
+          });
+        }
+      }
     }
 
     if (traCuuResults.length > 0 && traCuuResults.every((t) => t.status >= 400)) {
@@ -283,6 +421,8 @@ export class EVNNPCWorker extends BaseWorker {
         kyList,
         traCuuHdsPc: traCuuResults,
         xemChiTietHoaDonNpc: xemChiTietResults,
+        xemHoaDonNpc: xemHoaDonNpcResults,
+        ...(onlinePaymentLink !== undefined ? { onlinePaymentLink } : {}),
       },
     };
   }

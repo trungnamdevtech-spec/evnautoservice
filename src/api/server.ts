@@ -109,7 +109,7 @@ app.get("/", (c) =>
         "GET /api/bills/month?thang=&nam=":                "Tất cả HĐ 1 tháng (?region=)",
         "GET /api/bills/due-soon?days=7":                  "HĐ sắp đến hạn (?region=)",
         "GET /api/bills/:invoiceId":                       "Tra theo invoiceId (ID_HDON — CPC)",
-        "GET /api/bills/npc/:idHdon":                     "Tra electricity_bills theo id_hdon NPC (URL-encode)",
+        "GET /api/bills/npc/:idHdon":                     "Tra electricity_bills NPC (?kind=tt = HĐ thanh toán; mặc định thông báo)",
       },
       export: {
         "GET /api/export/period?ky=&thang=&nam=":          "Excel HĐ 1 kỳ (?region=)",
@@ -129,16 +129,18 @@ app.get("/", (c) =>
       npc: {
         "POST /api/npc/accounts":                           "Thêm tài khoản NPC { username, password, label? } (cần NPC_CREDENTIALS_SECRET)",
         "POST /api/npc/accounts/bulk":                     "Import hàng loạt { accounts: [{ username, password, label? }] }",
-        "GET  /api/npc/accounts?enabledOnly=&limit=&skip=": "Danh sách tài khoản (không trả mật khẩu)",
+        "POST /api/npc/accounts/replace-bulk":             "Xóa hết npc_accounts + nạp JSON (cần NPC_ALLOW_ACCOUNT_REPLACE_BULK + confirmation)",
+        "POST /api/npc/online-payment-link":               "{ npcAccountId, maKhachHang? } → 202 + taskId; poll GET /api/tasks/:taskId (sync: env + body.sync)",
+        "GET  /api/npc/accounts?enabledOnly=&limit=&skip=&username=": "Danh sách hoặc ?username|maKhachHang=MA_KH → 1 account",
         "PATCH /api/npc/accounts/:id":                     "{ enabled } hoặc { password } — đổi MK xóa disabledReason",
-        "GET  /api/npc/bills?maKhachHang=&limit=":         "Danh sách electricity_bills đã parse (EVN_NPC)",
-        "POST /api/npc/ensure-bill":                       "Agent: { username|maKhachHang, ky, thang, nam } — cache_hit | queued (202) + agentMessage",
+        "GET  /api/npc/bills?maKhachHang=&npcPdfKind=":    "Danh sách electricity_bills (npcPdfKind=all|thong_bao|thanh_toan)",
+        "POST /api/npc/ensure-bill":                       "Agent: { ky, thang, nam, … }; npcPdfKind chỉ kiểm tra cache — task luôn TB+GTGT (env)",
         "POST /api/npc/tasks":                               "Tạo task quét NPC { npcAccountId, ky, thang, nam }",
-        "POST /api/npc/tasks/enqueue-all-enabled":          "Xếp hàng quét cho mọi tài khoản NPC enabled (cùng ky/thang/nam)",
+        "POST /api/npc/tasks/enqueue-all-enabled":          "Quét mọi account enabled: cùng kỳ, mỗi task TB + GTGT (env), không tham số GTGT riêng",
       },
       pdf: {
         "GET /api/pdf/npc/:idHdon":
-          "Tải file PDF NPC đã lưu theo id_hdon (encodeURIComponent)",
+          "Tải PDF NPC (?kind=tt|thanh_toan = HĐ thanh toán; mặc định thông báo)",
         "GET /api/pdf/npc/customer/:maKH/list?limit=":
           "Liệt kê PDF NPC đã parse của một mã khách hàng",
         "GET /api/pdf/invoice/:invoiceId?fileType=TBAO|HDON":

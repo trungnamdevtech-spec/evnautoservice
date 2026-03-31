@@ -5,6 +5,7 @@ import { InvoiceItemRepository } from "../../db/invoiceItemRepository.js";
 import { ElectricityBillRepository } from "../../db/electricityBillRepository.js";
 import type { PdfFileType } from "../../types/invoiceItem.js";
 import { buildPdfZipResponse, pdfEntryFileName } from "../../services/pdf/pdfZipService.js";
+import type { NpcPdfKind } from "../../services/npc/npcElectricityBillId.js";
 
 const repo = new InvoiceItemRepository();
 const billRepo = new ElectricityBillRepository();
@@ -28,6 +29,13 @@ function parseZipLimit(raw: string | undefined, fallback: number): number {
   return Math.min(Math.max(n, 1), 2000);
 }
 
+/** Query `kind`: mặc định thông báo; `tt` | `thanh_toan` = hóa đơn thanh toán (XemHoaDon_NPC). */
+function parseNpcPdfKindQuery(q: string | undefined): NpcPdfKind {
+  const v = (q ?? "").toLowerCase().trim();
+  if (v === "tt" || v === "thanh_toan" || v === "payment") return "thanh_toan";
+  return "thong_bao";
+}
+
 async function servePdfByPath(
   filePath: string,
   fileNameHint: string,
@@ -47,7 +55,7 @@ async function servePdfByPath(
   });
 }
 
-// GET /api/pdf/npc/:idHdon — tải PDF đã lưu theo id_hdon NPC (URL-encode, ví dụ %3D cho =)
+// GET /api/pdf/npc/:idHdon?kind=tt|thanh_toan — PDF thông báo (mặc định) hoặc hóa đơn thanh toán
 pdfRouter.get("/npc/:idHdon", async (c) => {
   let idHdon: string;
   try {
@@ -55,7 +63,8 @@ pdfRouter.get("/npc/:idHdon", async (c) => {
   } catch {
     return c.json({ error: "idHdon không hợp lệ" }, 400);
   }
-  const bill = await billRepo.findByNpcIdHdon(idHdon);
+  const kind = parseNpcPdfKindQuery(c.req.query("kind"));
+  const bill = await billRepo.findByNpcIdHdon(idHdon, kind);
   if (!bill?.pdfPath) {
     return c.json({ error: `Không tìm thấy bản ghi electricity_bills cho id_hdon` }, 404);
   }
@@ -65,7 +74,7 @@ pdfRouter.get("/npc/:idHdon", async (c) => {
       404,
     );
   }
-  const hint = `${bill.maKhachHang}_npc_${idHdon.replace(/[^a-zA-Z0-9+=_-]/g, "_").slice(0, 40)}.pdf`;
+  const hint = `${bill.maKhachHang}_npc_${idHdon.replace(/[^a-zA-Z0-9+=_-]/g, "_").slice(0, 40)}${kind === "thanh_toan" ? "_tt" : ""}.pdf`;
   try {
     return await servePdfByPath(bill.pdfPath, hint);
   } catch (err) {
@@ -92,13 +101,14 @@ pdfRouter.get("/npc/customer/:maKhachHang/list", async (c) => {
     total: rows.length,
     data: rows.map((b) => ({
       npcIdHdon: b.npcIdHdon,
+      npcPdfKind: b.npcPdfKind ?? "thong_bao",
       billKey: b.billKey,
       invoiceIdSurrogate: b.invoiceId,
       kyBill: b.kyBill,
       tongTienThanhToan: b.tongKet.tongTienThanhToan,
       hanThanhToan: b.hanThanhToan,
       pdfPath: path.relative(process.cwd(), path.resolve(b.pdfPath)).replace(/\\/g, "/"),
-      downloadUrl: `/api/pdf/npc/${encodeURIComponent(b.npcIdHdon ?? "")}`,
+      downloadUrl: `/api/pdf/npc/${encodeURIComponent(b.npcIdHdon ?? "")}${b.npcPdfKind === "thanh_toan" ? "?kind=tt" : ""}`,
     })),
   });
 });

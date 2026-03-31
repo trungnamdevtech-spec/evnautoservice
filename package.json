@@ -29,6 +29,8 @@
     "verify:npc-pdfs": "node --import tsx src/scripts/verify-npc-pdfs-vs-db.ts",
     "import:npc-accounts": "node --import tsx src/scripts/import-npc-accounts.ts",
     "import:npc-accounts:xlsx": "node --import tsx src/scripts/import-npc-accounts-xlsx.ts",
+    "replace:npc-accounts:xlsx": "node --import tsx src/scripts/replace-npc-accounts-xlsx.ts",
+    "demo:npc-online-payment-link": "node --import tsx src/scripts/demo-npc-online-payment-link.ts",
     "api": "node --import tsx src/api/server.ts",
     "postinstall": "node scripts/playwright-postinstall.cjs"
   },
