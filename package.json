@@ -36,6 +36,9 @@
     "postinstall": "node scripts/playwright-postinstall.cjs"
   },
   "dependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2",
     "@hono/node-server": "^1.19.11",
     "archiver": "^7.0.1",
     "dotenv": "^16.4.5",
@@ -51,9 +54,6 @@
   "devDependencies": {
     "@types/archiver": "^7.0.0",
     "@types/exceljs": "^0.5.3",
-    "@types/node": "^22.10.2",
-    "@types/pdf-parse": "^1.1.5",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "@types/pdf-parse": "^1.1.5"
   }
 }

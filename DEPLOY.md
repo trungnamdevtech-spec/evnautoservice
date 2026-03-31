@@ -1,6 +1,10 @@
 # Checklist triển khai (máy chủ / Docker)
 
-1. **`.env`** (copy từ `.env.example`): `MONGODB_URI`, `MONGODB_DB`, `NPC_CREDENTIALS_SECRET` (≥16 ký tự), `ANTICAPTCHA_API_KEY`, `API_KEY`, `API_KEY_AUTH_ENABLED`, `EVN_CPC_LOGIN_*` nếu dùng quét CPC.
+0. **Cài dependency (bắt buộc sau `git pull`):** trong thư mục repo chạy `npm ci` hoặc `npm install`.  
+   - **Không** dùng `npm ci --omit=dev` trừ khi bạn chỉ chạy file đã build sẵn trong `dist/` và không chạy script `.ts` (import xlsx, replace accounts, …).  
+   - Nếu gặp `tsc: command not found` hoặc `Cannot find package 'tsx'`: chạy lại **`npm install`** đầy đủ (hoặc `npm ci --include=dev`), rồi `npm run build`.
+
+1. **`.env`** (tham chiếu biến trong repo / tài liệu nội bộ): `MONGODB_URI`, `MONGODB_DB`, `NPC_CREDENTIALS_SECRET` (≥16 ký tự), `ANTICAPTCHA_API_KEY`, `API_KEY`, `API_KEY_AUTH_ENABLED`, `EVN_CPC_LOGIN_*` nếu dùng quét CPC.
 2. **MongoDB:** `docker compose up -d` — service `mongo` healthy trước `app`.
 3. **NPC — tài khoản:** đặt `data/npc-accounts.xlsx` (cột A/B) hoặc chạy `npm run import:npc-accounts:xlsx -- data/...xlsx` một lần; hoặc `AUTO_IMPORT_NPC_XLSX=true` để import khi start.
 4. **Volume:** `output/pdfs` và `data` đã map trong `docker-compose.yml` — đảm bảo quyền ghi trên host.
