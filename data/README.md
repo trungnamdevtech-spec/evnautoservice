@@ -21,6 +21,12 @@ Dùng khi muốn **thay toàn bộ** `npc_accounts` bằng bản clean (ví dụ
 npm run replace:npc-accounts:clean
 ```
 
+**Docker (image đã build, không có `src/`):** trong thư mục có `docker-compose.yml`:
+
+```bash
+docker compose exec app npm run replace:npc-accounts:clean:dist
+```
+
 Script này tương đương:
 
 - Parse Excel — **chỉ khi có ít nhất một dòng hợp lệ** mới xóa DB (tránh làm trống nhầm).

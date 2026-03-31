@@ -31,6 +31,8 @@
     "import:npc-accounts:xlsx": "node --import tsx src/scripts/import-npc-accounts-xlsx.ts",
     "replace:npc-accounts:xlsx": "node --import tsx src/scripts/replace-npc-accounts-xlsx.ts",
     "replace:npc-accounts:clean": "node --import tsx src/scripts/replace-npc-accounts-xlsx.ts data/account_clean.xlsx --confirm-delete-all --wipe-npc-tasks",
+    "replace:npc-accounts:xlsx:dist": "node dist/scripts/replace-npc-accounts-xlsx.js",
+    "replace:npc-accounts:clean:dist": "node dist/scripts/replace-npc-accounts-xlsx.js data/account_clean.xlsx --confirm-delete-all --wipe-npc-tasks",
     "demo:npc-online-payment-link": "node --import tsx src/scripts/demo-npc-online-payment-link.ts",
     "api": "node --import tsx src/api/server.ts",
     "postinstall": "node scripts/playwright-postinstall.cjs"

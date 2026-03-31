@@ -1,6 +1,6 @@
 # --- build ---
-# Toan bo dependency (ke ca dev: typescript) lay tu package-lock.json — can commit lockfile.
-# Khong dung `npm install` tren may chu: chi `docker compose build` sau khi doi package.json.
+# `npm run build` (tsc) chay o day — tren may host KHONG can chay build neu chi dung Docker.
+# Dependency lay tu package-lock.json — can commit lockfile. Sau doi code: docker compose build.
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
