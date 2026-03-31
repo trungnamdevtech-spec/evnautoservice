@@ -153,12 +153,14 @@ export async function processNpcTask(
       const onlinePaymentLink = await fetchNpcOnlinePaymentLink(page, maKh, step);
       const storageAfter = await page.context().storageState();
       await npcRepo.updateSession(accId, JSON.stringify(storageAfter), new Date());
-      await repo.markSuccess(taskId, {
+      const meta: InvoiceDownloadMetadata = {
         downloadedAt: new Date().toISOString(),
         lookupPayload: {
           onlinePaymentLink: onlinePaymentLink as unknown as Record<string, unknown>,
         },
-      });
+      };
+      await repo.markSuccess(taskId, meta);
+      await fireAgentTaskWebhook({ task, taskId, status: "SUCCESS", resultMetadata: meta });
       logTaskPhase(
         taskHex,
         "SUCCESS",
