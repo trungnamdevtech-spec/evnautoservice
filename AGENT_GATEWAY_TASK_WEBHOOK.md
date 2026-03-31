@@ -152,7 +152,7 @@ Gateway nên map sang câu trả lời người dùng theo `code` / `reason` (xe
 ## 7. Liên quan code
 
 - Gửi webhook: `src/services/webhook/agentTaskWebhook.ts`
-- Gọi sau SUCCESS/FAILED: `src/worker/processTask.ts`
+- Worker: mọi kết thúc task đi qua `completeTaskSuccess` / `completeTaskFailed` trong `src/worker/processTask.ts` (cặp **mark DB + webhook** — tránh lệch nhánh như thiếu webhook ở `online_payment_link`).
 - Biến môi trường: `src/config/env.ts`
 
 Tài liệu poll task / API: `GET /api/tasks/:taskId` trong catalog Agent Gateway.

@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "playwright";
 import { randomUUID } from "node:crypto";
 import { env } from "../config/env.js";
 import { normalizeStorageState } from "../core/BaseWorker.js";
+import type { ObjectId } from "mongodb";
 import type { TaskRepository } from "../db/taskRepository.js";
 import type { InvoiceDownloadMetadata, ScrapeTask } from "../types/task.js";
 import type { EVNCPCWorker } from "../providers/evn/EVNCPCWorker.js";
@@ -19,6 +20,37 @@ import { fireAgentTaskWebhook } from "../services/webhook/agentTaskWebhook.js";
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.stack ?? err.message;
   return String(err);
+}
+
+const TASK_FAILED_MAX_LEN = 8000;
+
+/**
+ * Luôn dùng cặp này khi kết thúc task (tránh quên bước webhook như nhánh `online_payment_link` trước đây).
+ */
+async function completeTaskSuccess(
+  repo: TaskRepository,
+  task: ScrapeTask,
+  taskId: ObjectId,
+  metadata: InvoiceDownloadMetadata,
+): Promise<void> {
+  await repo.markSuccess(taskId, metadata);
+  await fireAgentTaskWebhook({ task, taskId, status: "SUCCESS", resultMetadata: metadata });
+}
+
+async function completeTaskFailed(
+  repo: TaskRepository,
+  task: ScrapeTask,
+  taskId: ObjectId,
+  reason: string,
+): Promise<void> {
+  const trimmed = reason.slice(0, TASK_FAILED_MAX_LEN);
+  await repo.markFailed(taskId, trimmed);
+  await fireAgentTaskWebhook({
+    task,
+    taskId,
+    status: "FAILED",
+    errorMessage: trimmed,
+  });
 }
 
 const invoiceRepo = new InvoiceItemRepository();
@@ -105,21 +137,20 @@ export async function processNpcTask(
   const accId = parseNpcAccountIdFromPayload(task.payload);
   const account = await npcRepo.findById(accId);
   if (!account) {
-    const err = "Tài khoản NPC không tồn tại";
-    await repo.markFailed(taskId, err);
-    await fireAgentTaskWebhook({ task, taskId, status: "FAILED", errorMessage: err });
+    await completeTaskFailed(repo, task, taskId, "Tài khoản NPC không tồn tại");
     return;
   }
   if (!account.enabled) {
-    const err = `Tài khoản NPC đã tắt: ${account.username}`;
-    await repo.markFailed(taskId, err);
-    await fireAgentTaskWebhook({ task, taskId, status: "FAILED", errorMessage: err });
+    await completeTaskFailed(repo, task, taskId, `Tài khoản NPC đã tắt: ${account.username}`);
     return;
   }
   if (account.disabledReason === "wrong_password") {
-    const err = `Tài khoản đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`;
-    await repo.markFailed(taskId, err);
-    await fireAgentTaskWebhook({ task, taskId, status: "FAILED", errorMessage: err });
+    await completeTaskFailed(
+      repo,
+      task,
+      taskId,
+      `Tài khoản đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`,
+    );
     return;
   }
 
@@ -159,8 +190,7 @@ export async function processNpcTask(
           onlinePaymentLink: onlinePaymentLink as unknown as Record<string, unknown>,
         },
       };
-      await repo.markSuccess(taskId, meta);
-      await fireAgentTaskWebhook({ task, taskId, status: "SUCCESS", resultMetadata: meta });
+      await completeTaskSuccess(repo, task, taskId, meta);
       logTaskPhase(
         taskHex,
         "SUCCESS",
@@ -172,18 +202,11 @@ export async function processNpcTask(
     }
 
     const metadata = await npcWorker.runTask(page, task, taskHex);
-    await repo.markSuccess(taskId, metadata);
-    await fireAgentTaskWebhook({ task, taskId, status: "SUCCESS", resultMetadata: metadata });
+    await completeTaskSuccess(repo, task, taskId, metadata);
     logTaskPhase(taskHex, "SUCCESS", `NPC đăng nhập + lưu session — ${account.username}`);
   } catch (err) {
     const msg = formatError(err);
-    await repo.markFailed(taskId, msg);
-    await fireAgentTaskWebhook({
-      task,
-      taskId,
-      status: "FAILED",
-      errorMessage: msg.slice(0, 8000),
-    });
+    await completeTaskFailed(repo, task, taskId, msg);
     logTaskPhase(taskHex, "FAILED", msg.split("\n")[0]?.slice(0, 500) ?? "unknown error");
   } finally {
     if (page && env.playwrightPauseBeforeCloseMs > 0) {
@@ -246,8 +269,7 @@ export async function processTask(
     const parseSync = await autoParseNewPdfs(taskHex, ky, thang, nam);
 
     const fullMeta: InvoiceDownloadMetadata = { ...metadata, parseSync };
-    await repo.markSuccess(taskId, fullMeta);
-    await fireAgentTaskWebhook({ task, taskId, status: "SUCCESS", resultMetadata: fullMeta });
+    await completeTaskSuccess(repo, task, taskId, fullMeta);
     logTaskPhase(
       taskHex,
       "SUCCESS",
@@ -255,13 +277,7 @@ export async function processTask(
     );
   } catch (err) {
     const msg = formatError(err);
-    await repo.markFailed(taskId, msg);
-    await fireAgentTaskWebhook({
-      task,
-      taskId,
-      status: "FAILED",
-      errorMessage: msg.slice(0, 8000),
-    });
+    await completeTaskFailed(repo, task, taskId, msg);
     logTaskPhase(taskHex, "FAILED", msg.split("\n")[0]?.slice(0, 500) ?? "unknown error");
   } finally {
     if (page && env.playwrightPauseBeforeCloseMs > 0) {
