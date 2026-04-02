@@ -31,6 +31,15 @@ export async function fetchHanoiUserInfo(accessToken: string): Promise<Record<st
   }
 }
 
+/** Một số bản userinfo / claim JWT dùng `maDvql`, số khác `maDViQLy` (khớp curl thủ công EVN HN). */
+function pickStr(raw: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = raw[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
 export function parseHanoiUserInfo(raw: Record<string, unknown>): HanoiUserInfoSnapshot {
   const stamp = raw["AspNet.Identity.SecurityStamp"];
   const roleRaw = raw.role;
@@ -39,8 +48,8 @@ export function parseHanoiUserInfo(raw: Record<string, unknown>): HanoiUserInfoS
 
   return {
     sub: typeof raw.sub === "string" ? raw.sub : undefined,
-    maDvql: typeof raw.maDvql === "string" ? raw.maDvql : undefined,
-    maKhachHang: typeof raw.maKhachHang === "string" ? raw.maKhachHang : undefined,
+    maDvql: pickStr(raw, ["maDvql", "maDViQLy", "MaDvql", "ma_dvql"]),
+    maKhachHang: pickStr(raw, ["maKhachHang", "MaKhachHang", "ma_khach_hang"]),
     keyUser: typeof raw.keyUser === "string" ? raw.keyUser : undefined,
     profile: typeof raw.profile === "string" ? raw.profile : undefined,
     name: typeof raw.name === "string" ? raw.name : undefined,

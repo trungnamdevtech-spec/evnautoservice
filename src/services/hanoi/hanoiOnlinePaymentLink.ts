@@ -1,7 +1,30 @@
 import type { Page } from "playwright";
 import { env } from "../../config/env.js";
 import { logger } from "../../core/logger.js";
+import type { HanoiContract } from "../../types/hanoiHopDong.js";
 import { buildHanoiApiAuthHeaders } from "./hanoiApiHeaders.js";
+
+/**
+ * API `GetListThongTinNoKhachHang` bắt buộc đúng **mã đơn vị quản lý** của mã khách hàng đó.
+ * `userinfo.maDvql` chỉ phản ánh một ngữ cảnh (thường là hợp đồng mặc định); khi một tài khoản
+ * quản lý **nhiều** mã KH thuộc **nhiều** đơn vị, phải lấy `maDonViQuanLy` / `maDvql` từ dòng
+ * `hanoi_contracts` trùng `maKhachHang`.
+ */
+export function resolveMaDViQLyForOnlinePayment(
+  contract: HanoiContract | null | undefined,
+  userInfoMaDvql: string | undefined,
+): string | undefined {
+  const fromNorm = contract?.normalized?.maDvql?.trim();
+  if (fromNorm) return fromNorm;
+  const raw = contract?.raw;
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    const v = r.maDonViQuanLy ?? r.maDvql ?? r.maDViQLy;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  const u = userInfoMaDvql?.trim();
+  return u || undefined;
+}
 
 /**
  * Kết quả lấy link thanh toán EVN Hà Nội.
@@ -56,13 +79,44 @@ type TracuuNoVm = {
   loaiHoaDon?: string;
 };
 
+function rowPaymentUrl(r: TracuuNoVm): string | undefined {
+  const rec = r as Record<string, unknown>;
+  const a = typeof r.urlThanhToan === "string" ? r.urlThanhToan.trim() : "";
+  const b = typeof rec.UrlThanhToan === "string" ? String(rec.UrlThanhToan).trim() : "";
+  const u = a || b;
+  return u || undefined;
+}
+
+function loaiMatchesTd(loai: unknown): boolean {
+  if (typeof loai !== "string") return false;
+  const s = loai.trim().toUpperCase();
+  return s === "TD" || s === "TIỀN ĐIỆN" || s.includes("TIỀN ĐIỆN");
+}
+
+function extractDebtListVm(data: unknown): unknown {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const o = data as Record<string, unknown>;
+  const keys = [
+    "listThongTinNoKhachHangVm",
+    "listThongTinNoKhachHang",
+    "ListThongTinNoKhachHangVm",
+    "thongTinNoKhachHangVms",
+  ];
+  for (const k of keys) {
+    if (k in o) return o[k];
+  }
+  return undefined;
+}
+
 function pickUrlThanhToan(list: unknown): string | null {
   if (!Array.isArray(list) || list.length === 0) return null;
   const rows = list.filter((x): x is TracuuNoVm => x !== null && typeof x === "object");
-  const td = rows.find((r) => r.loaiHoaDon === "TD" && typeof r.urlThanhToan === "string" && r.urlThanhToan.trim());
-  if (td?.urlThanhToan) return td.urlThanhToan.trim();
-  const any = rows.find((r) => typeof r.urlThanhToan === "string" && r.urlThanhToan.trim());
-  return any?.urlThanhToan?.trim() ?? null;
+  const td = rows.find((r) => loaiMatchesTd(r.loaiHoaDon) && rowPaymentUrl(r));
+  if (td) return rowPaymentUrl(td) ?? null;
+  const strictTd = rows.find((r) => String(r.loaiHoaDon ?? "").trim().toUpperCase() === "TD" && rowPaymentUrl(r));
+  if (strictTd) return rowPaymentUrl(strictTd) ?? null;
+  const any = rows.find((r) => rowPaymentUrl(r));
+  return any ? rowPaymentUrl(any) ?? null : null;
 }
 
 /**
@@ -140,20 +194,23 @@ async function fetchPaymentUrlFromTracuuApi(args: {
     const data = root.data;
     const list =
       data !== null && typeof data === "object" && !Array.isArray(data)
-        ? (data as Record<string, unknown>).listThongTinNoKhachHangVm
+        ? extractDebtListVm(data)
         : undefined;
 
     const paymentUrl = pickUrlThanhToan(list);
     if (!paymentUrl) {
+      const empty = !Array.isArray(list) || list.length === 0;
+      logger.warn(
+        `[hanoi-online-payment] FAIL ma=${args.maKhachHang} maDViQLy=${args.maDViQLy} code=${empty ? "EMPTY_DEBT_LIST" : "NO_PAYMENT_URL"} HTTP ${httpStatus}`,
+      );
       return {
         ok: false,
         httpStatus,
-        reason:
-          !Array.isArray(list) || list.length === 0
-            ? "Không có khoản nợ (danh sách trống) hoặc chưa phát sinh nợ."
-            : "Phản hồi không chứa urlThanhToan hợp lệ.",
+        reason: empty
+          ? "Không có khoản nợ (danh sách trống) hoặc chưa phát sinh nợ — kiểm tra maDViQLy đúng đơn vị của mã KH (hanoi_contracts)."
+          : "Phản hồi không chứa urlThanhToan hợp lệ.",
         bodyPreview: text.slice(0, 400),
-        code: !Array.isArray(list) || list.length === 0 ? "EMPTY_DEBT_LIST" : "NO_PAYMENT_URL",
+        code: empty ? "EMPTY_DEBT_LIST" : "NO_PAYMENT_URL",
       };
     }
 
@@ -221,5 +278,8 @@ export async function fetchHanoiOnlinePaymentLink(
     };
   }
 
+  logger.warn(
+    `[hanoi-online-payment] FAIL ma=${ma} code=${r.code} http=${r.httpStatus} — ${r.reason.slice(0, 200)}`,
+  );
   return fail(r.code, r.reason, ma, { httpStatus: r.httpStatus, bodyPreview: r.bodyPreview });
 }

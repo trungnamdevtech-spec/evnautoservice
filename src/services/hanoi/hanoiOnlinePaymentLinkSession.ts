@@ -6,9 +6,12 @@ import type { HanoiAccount } from "../../types/hanoiAccount.js";
 import { env } from "../../config/env.js";
 import {
   fetchHanoiOnlinePaymentLink,
+  resolveMaDViQLyForOnlinePayment,
   type HanoiOnlinePaymentLinkResult,
 } from "./hanoiOnlinePaymentLink.js";
 import { HanoiAccountRepository } from "../../db/hanoiAccountRepository.js";
+import { HanoiContractRepository } from "../../db/hanoiContractRepository.js";
+import { ensureHanoiHopDongSnapshot } from "./hanoiHopDongSync.js";
 import { getOrRefreshHanoiAccessToken } from "./hanoiTokenClient.js";
 import { ensureHanoiUserInfo } from "./hanoiUserInfoClient.js";
 import { logTaskPhase } from "../../core/logger.js";
@@ -33,9 +36,13 @@ export async function runHanoiOnlinePaymentLinkWithApi(
   logTaskPhase(traceId, "HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán (API) ma=${ma}`);
   const token = await getOrRefreshHanoiAccessToken(account, accountId, passwordPlain, hanoiRepo, secret);
   const userInfo = await ensureHanoiUserInfo(account, accountId, token, hanoiRepo);
+  const contractRepo = new HanoiContractRepository();
+  await ensureHanoiHopDongSnapshot(account, accountId, token, hanoiRepo, contractRepo).catch(() => undefined);
+  const contractRow = await contractRepo.findOneByAccountAndMa(accountId, ma);
+  const maDViQLy = resolveMaDViQLyForOnlinePayment(contractRow, userInfo.maDvql);
   return fetchHanoiOnlinePaymentLink(ma, step, {
     accessToken: token,
-    maDViQLy: userInfo.maDvql,
+    maDViQLy,
   });
 }
 
@@ -69,9 +76,13 @@ export async function runHanoiOnlinePaymentLinkWithPlaywright(
     logTaskPhase(traceId, "HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán (STS sau Playwright) ma=${ma}`);
     const token = await getOrRefreshHanoiAccessToken(account, accountId, passwordPlain, hanoiRepo, secret);
     const userInfo = await ensureHanoiUserInfo(account, accountId, token, hanoiRepo);
+    const contractRepo = new HanoiContractRepository();
+    await ensureHanoiHopDongSnapshot(account, accountId, token, hanoiRepo, contractRepo).catch(() => undefined);
+    const contractRow = await contractRepo.findOneByAccountAndMa(accountId, ma);
+    const maDViQLy = resolveMaDViQLyForOnlinePayment(contractRow, userInfo.maDvql);
     const result = await fetchHanoiOnlinePaymentLink(ma, step, {
       accessToken: token,
-      maDViQLy: userInfo.maDvql,
+      maDViQLy,
       page,
     });
     const storage = await page.context().storageState();

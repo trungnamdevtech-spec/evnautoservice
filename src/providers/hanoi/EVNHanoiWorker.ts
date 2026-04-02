@@ -15,6 +15,7 @@ import { logTaskPhase, logger } from "../../core/logger.js";
 import { hanoiHumanPause } from "../../services/hanoi/hanoiBrowserLikeHeaders.js";
 import {
   fetchHanoiOnlinePaymentLink,
+  resolveMaDViQLyForOnlinePayment,
   type HanoiOnlinePaymentLinkResult,
 } from "../../services/hanoi/hanoiOnlinePaymentLink.js";
 import { getOrRefreshHanoiAccessToken } from "../../services/hanoi/hanoiTokenClient.js";
@@ -416,10 +417,14 @@ export class EVNHanoiWorker extends BaseWorker {
       const rawMa =
         typeof task.payload.maKhachHang === "string" ? task.payload.maKhachHang.trim() : "";
       const maKh = effectiveMaKhachHangForBills(rawMa || undefined, account);
-      trace("HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán ma=${maKh}`);
       await hanoiHumanPause(env);
 
-      const maDViQLy = userInfo?.maDvql;
+      const contractRow = await this.contractRepo.findOneByAccountAndMa(accountId, maKh);
+      const maDViQLy = resolveMaDViQLyForOnlinePayment(contractRow, userInfo?.maDvql);
+      trace(
+        "HANOI_ONLINE_PAYMENT",
+        `Tra cứu link thanh toán ma=${maKh} maDViQLy=${maDViQLy ?? "?"} (${contractRow ? "theo hợp đồng" : "userinfo"})`,
+      );
       let onlinePaymentLink: HanoiOnlinePaymentLinkResult;
       if ("page" in auth) {
         onlinePaymentLink = await fetchHanoiOnlinePaymentLink(maKh, step, {

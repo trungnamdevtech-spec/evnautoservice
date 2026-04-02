@@ -134,7 +134,9 @@ Cùng URL `AGENT_TASK_WEBHOOK_URL` (nếu set):
 | `task.finished` | Task `SUCCESS` / `FAILED` — payload task + `resultMetadata` |
 | `hanoi.ensure_bill` | `POST /ensure-bill` trả **cache_hit** hoặc **already_queued** (không chờ worker) |
 
-Chữ ký: `X-Agent-Task-Signature: sha256=<hex>` khi có `AGENT_TASK_WEBHOOK_SECRET`.
+Chữ ký: `X-Agent-Task-Signature: sha256=<hex>` khi có `AGENT_TASK_WEBHOOK_SECRET` (cùng thuật toán như `task.finished`).
+
+**Hợp đồng đầy đủ + mẫu JSON + cách map `chat_id` / Telegram (Gateway):** xem **`AGENT_GATEWAY_TASK_WEBHOOK.md`** ở root repo — **mục 6** (`hanoi.ensure_bill`). Lưu ý: **`cache_hit` không có `taskId`** — Gateway cần lưu khóa `(maKhachHang + period)` khi user gọi ensure-bill, hoặc sau này bổ sung `correlationId` phía API nếu sản phẩm yêu cầu.
 
 ---
 
