@@ -31,7 +31,7 @@ export class TaskRepository {
     const c = await this.col();
     const now = new Date();
     const res = await c.findOneAndUpdate(
-      { status: "PENDING", provider: { $in: ["EVN_CPC", "EVN_NPC"] } },
+      { status: "PENDING", provider: { $in: ["EVN_CPC", "EVN_NPC", "EVN_HANOI"] } },
       { $set: { status: "RUNNING" as TaskStatus, workerId, updatedAt: now } },
       { sort: { createdAt: 1 }, returnDocument: "after" },
     );
@@ -263,6 +263,82 @@ export class TaskRepository {
     const old = await c.findOne({ _id: taskId, status: "FAILED" });
     if (!old) return null;
     return this.insertPendingEvn(old.payload);
+  }
+
+  /** Task quét Hanoi — payload cần `hanoiAccountId` + kỳ/tháng/năm */
+  async insertPendingHanoi(payload: Record<string, unknown>): Promise<ObjectId> {
+    const c = await this.col();
+    const now = new Date();
+    const res = await c.insertOne({
+      status: "PENDING",
+      provider: "EVN_HANOI",
+      payload,
+      createdAt: now,
+      updatedAt: now,
+    } as ScrapeTask);
+    return res.insertedId;
+  }
+
+  /**
+   * Task lấy link thanh toán Hanoi — `payload.kind` = `online_payment_link`.
+   */
+  async insertPendingHanoiOnlinePaymentLink(payload: Record<string, unknown>): Promise<ObjectId> {
+    const c = await this.col();
+    const now = new Date();
+    const res = await c.insertOne({
+      status: "PENDING",
+      provider: "EVN_HANOI",
+      payload: { kind: "online_payment_link", ...payload },
+      createdAt: now,
+      updatedAt: now,
+    } as ScrapeTask);
+    return res.insertedId;
+  }
+
+  /** Tránh trùng job PENDING/RUNNING cùng tài khoản + kỳ Hanoi. */
+  async findActiveHanoiForPeriod(
+    hanoiAccountIdHex: string,
+    ky: string,
+    thang: string,
+    nam: string,
+  ): Promise<ScrapeTask | null> {
+    const c = await this.col();
+    return c.findOne({
+      status: { $in: ["PENDING", "RUNNING"] },
+      provider: "EVN_HANOI",
+      $and: [
+        {
+          $or: [
+            { "payload.hanoiAccountId": hanoiAccountIdHex },
+            { "payload.accountId": hanoiAccountIdHex },
+          ],
+        },
+        {
+          $or: [
+            { "payload.period": ky, "payload.month": thang, "payload.year": nam },
+            { "payload.ky": ky, "payload.thang": thang, "payload.nam": nam },
+          ],
+        },
+      ],
+    });
+  }
+
+  /** Tránh trùng job PENDING/RUNNING cùng tài khoản + mã KH tra cứu link thanh toán Hanoi. */
+  async findActiveHanoiOnlinePaymentLink(
+    hanoiAccountIdHex: string,
+    maKhachHangNormalized: string,
+  ): Promise<ScrapeTask | null> {
+    const c = await this.col();
+    return c.findOne({
+      status: { $in: ["PENDING", "RUNNING"] },
+      provider: "EVN_HANOI",
+      "payload.kind": "online_payment_link",
+      $or: [
+        { "payload.hanoiAccountId": hanoiAccountIdHex },
+        { "payload.accountId": hanoiAccountIdHex },
+      ],
+      "payload.maKhachHang": maKhachHangNormalized,
+    });
   }
 
   /**

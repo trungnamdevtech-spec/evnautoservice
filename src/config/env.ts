@@ -166,6 +166,107 @@ export const env = {
    */
   npcOnlinePaymentLinkSyncApiEnabled: parseBoolSafe(process.env.NPC_ONLINE_PAYMENT_LINK_SYNC_API_ENABLED, false),
 
+  // ── EVN Hà Nội ────────────────────────────────────────────────────────────
+
+  /** Trang đăng nhập EVN Hà Nội (Angular app) */
+  evnHanoiLoginUrl: process.env.EVN_HANOI_LOGIN_URL ?? "https://evnhanoi.vn/user/login",
+  /** Origin EVN Hà Nội — dùng cho API same-origin sau đăng nhập */
+  evnHanoiBaseUrl: process.env.EVN_HANOI_BASE_URL ?? "https://evnhanoi.vn",
+  /**
+   * Bí mật dài (≥16 ký tự khuyến nghị) để mã hóa mật khẩu lưu trong hanoi_accounts.
+   * Bắt buộc khi gọi API thêm tài khoản Hà Nội.
+   */
+  hanoiCredentialsSecret: process.env.HANOI_CREDENTIALS_SECRET ?? "",
+  /** Timeout mỗi bước Playwright Hanoi (goto, probe) — ms. */
+  hanoiStepTimeoutMs: Math.max(15_000, parseIntSafe(process.env.HANOI_STEP_TIMEOUT_MS, 90_000)),
+  /** Số lần thử tối đa khi Hanoi báo sai captcha. */
+  hanoiCaptchaMaxAttempts: Math.min(10, Math.max(1, parseIntSafe(process.env.HANOI_CAPTCHA_MAX_ATTEMPTS, 5))),
+  /** Chờ ngẫu nhiên [min,max] ms giữa các bước — chống bot. */
+  hanoiHumanJitterMinMs: Math.max(0, parseIntSafe(process.env.HANOI_HUMAN_JITTER_MIN_MS, 120)),
+  hanoiHumanJitterMaxMs: Math.max(0, parseIntSafe(process.env.HANOI_HUMAN_JITTER_MAX_MS, 500)),
+  /** `false`: tắt POST `/api/hanoi/online-payment-link`. */
+  hanoiOnlinePaymentLinkApiEnabled: parseBoolSafe(process.env.HANOI_ONLINE_PAYMENT_LINK_API_ENABLED, true),
+  /**
+   * `true`: cho phép POST `/api/hanoi/accounts/replace-bulk`.
+   * Mặc định tắt — chỉ bật tạm khi vận hành.
+   */
+  hanoiAllowAccountReplaceBulk: parseBoolSafe(process.env.HANOI_ALLOW_ACCOUNT_REPLACE_BULK, false),
+  /**
+   * `true`: khi khởi động, nếu tồn tại file `HANOI_ACCOUNTS_XLSX_PATH` thì import vào `hanoi_accounts`.
+   * Tắt mặc định.
+   */
+  autoImportHanoiXlsxOnStart: parseBoolSafe(process.env.AUTO_IMPORT_HANOI_XLSX, false),
+  /** Đường dẫn file .xlsx (cột A=username, B=password, C=label?). */
+  hanoiAccountsXlsxPath: process.env.HANOI_ACCOUNTS_XLSX_PATH ?? "./data/hanoi-accounts.xlsx",
+  /** `false`: chỉ tải PDF thông báo, không gọi thêm PDF GTGT. */
+  hanoiDownloadPaymentPdf: parseBoolSafe(process.env.HANOI_DOWNLOAD_PAYMENT_PDF, true),
+  /** GET Tra cứu Hanoi: retry khi 403/429/502. 0 = không retry. */
+  hanoiTraCuuMaxRetries: Math.min(5, Math.max(0, parseIntSafe(process.env.HANOI_TRACUU_MAX_RETRIES, 2))),
+  hanoiTraCuuRetryDelayMs: Math.max(0, parseIntSafe(process.env.HANOI_TRACUU_RETRY_DELAY_MS, 2500)),
+  /** Timeout GET `/api/TraCuu/GetThongTinHoaDon` (ms). */
+  hanoiTraCuuGetThongTinTimeoutMs: Math.max(
+    10_000,
+    parseIntSafe(process.env.HANOI_TRACUU_GET_THONG_TIN_TIMEOUT_MS, 120_000),
+  ),
+  /** Timeout GET `/api/Cmis/XemHoaDonByMaKhachHang` (ms). */
+  hanoiPdfXemHoaDonTimeoutMs: Math.max(
+    15_000,
+    parseIntSafe(process.env.HANOI_PDF_XEM_HOA_DON_TIMEOUT_MS, 180_000),
+  ),
+  /** Tham số `loaiHoaDon` — PDF thông báo tiền điện (mặc định TD như web). */
+  hanoiPdfLoaiTienDien: (process.env.HANOI_PDF_LOAI_TIEN_DIEN ?? "TD").trim() || "TD",
+  /** Tham số `loaiHoaDon` — PDF hóa đơn GTGT (thử khi tải bản thứ hai). */
+  hanoiPdfLoaiGtgt: (process.env.HANOI_PDF_LOAI_GTGT ?? "GTGT").trim() || "GTGT",
+  /**
+   * `true`: in log timing đăng nhập Hanoi ra console.
+   */
+  hanoiLoginTraceTiming: parseBoolSafe(process.env.HANOI_LOGIN_TRACE_TIMING, false),
+
+  /**
+   * `true` (mặc định): đăng nhập EVN Hà Nội qua API `POST .../connect/token` — không mở Chromium.
+   * `false`: dùng Playwright như trước (fallback khi STS thay đổi / cần captcha).
+   */
+  hanoiUseApiLogin: parseBoolSafe(process.env.HANOI_USE_API_LOGIN, true),
+  /** URL STS OAuth2 password grant (EVN Hà Nội). */
+  hanoiStsTokenUrl:
+    process.env.HANOI_STS_TOKEN_URL ?? "https://apicskh.evnhanoi.vn/connect/token",
+  /** client_id gửi kèm grant password — khớp web app. */
+  hanoiStsClientId: process.env.HANOI_STS_CLIENT_ID ?? "httplocalhost4500",
+  /** client_secret — có thể override qua env production. */
+  hanoiStsClientSecret: process.env.HANOI_STS_CLIENT_SECRET ?? "secret",
+  /** Timeout (ms) cho request lấy token. */
+  hanoiStsTokenTimeoutMs: Math.max(10_000, parseIntSafe(process.env.HANOI_STS_TOKEN_TIMEOUT_MS, 120_000)),
+  /**
+   * Làm mới token trước khi hết hạn (giây). Mặc định 300s = 5 phút trước expires_in.
+   */
+  hanoiApiTokenRefreshBufferSec: Math.max(60, parseIntSafe(process.env.HANOI_API_TOKEN_REFRESH_BUFFER_SEC, 300)),
+  /**
+   * `true`: cho phép POST `/api/hanoi/online-payment-link` với body `{ "sync": true }` chạy đồng bộ.
+   * Mặc định tắt — agent dùng async (202 + poll task).
+   */
+  hanoiOnlinePaymentLinkSyncApiEnabled: parseBoolSafe(
+    process.env.HANOI_ONLINE_PAYMENT_LINK_SYNC_API_ENABLED,
+    false,
+  ),
+
+  /** GET OpenID userinfo — Bearer access_token. */
+  hanoiStsUserInfoUrl:
+    process.env.HANOI_STS_USERINFO_URL ?? "https://apicskh.evnhanoi.vn/connect/userinfo",
+  /** Timeout (ms) cho GET userinfo. */
+  hanoiUserInfoTimeoutMs: Math.max(5_000, parseIntSafe(process.env.HANOI_USERINFO_TIMEOUT_MS, 60_000)),
+  /**
+   * Không gọi lại userinfo nếu đã có maDvql + maKhachHang và lần fetch gần nhất chưa quá N ms.
+   * 0 = mỗi lần chạy task đều gọi lại userinfo (mặc định).
+   */
+  hanoiUserInfoRefreshMinMs: Math.max(0, parseIntSafe(process.env.HANOI_USERINFO_REFRESH_MIN_MS, 0)),
+
+  /** GET `/api/TraCuu/GetDanhSachHopDongByUserName` — timeout (ms). */
+  hanoiHopDongTimeoutMs: Math.max(15_000, parseIntSafe(process.env.HANOI_HOP_DONG_TIMEOUT_MS, 120_000)),
+  /**
+   * Không gọi lại danh sách hợp đồng nếu hopDongFetchedAt chưa quá N ms. 0 = mỗi task đều đồng bộ.
+   */
+  hanoiHopDongRefreshMinMs: Math.max(0, parseIntSafe(process.env.HANOI_HOP_DONG_REFRESH_MIN_MS, 0)),
+
   /**
    * POST JSON tới URL này khi worker ghi SUCCESS/FAILED cho mọi task (EVN_CPC / EVN_NPC).
    * Để trống = tắt webhook.

@@ -7,8 +7,11 @@ import type { TaskRepository } from "../db/taskRepository.js";
 import type { InvoiceDownloadMetadata, ScrapeTask } from "../types/task.js";
 import type { EVNCPCWorker } from "../providers/evn/EVNCPCWorker.js";
 import type { EVNNPCWorker } from "../providers/npc/EVNNPCWorker.js";
+import type { EVNHanoiWorker } from "../providers/hanoi/EVNHanoiWorker.js";
 import { NpcAccountRepository } from "../db/npcAccountRepository.js";
+import { HanoiAccountRepository } from "../db/hanoiAccountRepository.js";
 import { parseNpcAccountIdFromPayload } from "../providers/npc/npcTaskPayload.js";
+import { parseHanoiAccountIdFromPayload } from "../providers/hanoi/hanoiTaskPayload.js";
 import { InvoiceItemRepository } from "../db/invoiceItemRepository.js";
 import { ElectricityBillRepository } from "../db/electricityBillRepository.js";
 import { parseElectricityBillPdf } from "../services/pdf/ElectricityBillParser.js";
@@ -311,16 +314,106 @@ export async function processTask(
 /**
  * Lấy task theo claim nguyên tử rồi xử lý (dùng trong vòng lặp poll).
  */
+/**
+ * Xử lý một task EVN_HANOI: đăng nhập phiên, tra cứu hóa đơn / lấy link thanh toán.
+ */
+export async function processHanoiTask(
+  task: ScrapeTask,
+  repo: TaskRepository,
+  hanoiWorker: EVNHanoiWorker,
+): Promise<void> {
+  if (!task._id || task.provider !== "EVN_HANOI") {
+    return;
+  }
+
+  const taskId = task._id;
+  const taskHex = taskId.toHexString();
+  const hanoiRepo = new HanoiAccountRepository();
+  const accId = parseHanoiAccountIdFromPayload(task);
+  const account = await hanoiRepo.findById(accId);
+  if (!account) {
+    await completeTaskFailed(repo, task, taskId, "Tài khoản Hanoi không tồn tại");
+    return;
+  }
+  if (!account.enabled) {
+    await completeTaskFailed(repo, task, taskId, `Tài khoản Hanoi đã tắt: ${account.username}`);
+    return;
+  }
+  if (account.disabledReason === "wrong_password") {
+    await completeTaskFailed(
+      repo,
+      task,
+      taskId,
+      `Tài khoản Hanoi đã bị đánh dấu sai mật khẩu — không đăng nhập lại: ${account.username}`,
+    );
+    return;
+  }
+
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+  let browserSessionStarted = false;
+
+  try {
+    logTaskPhase(taskHex, "CLAIMED", `Hanoi — ${account.username}`);
+
+    if (env.hanoiUseApiLogin) {
+      const metadata = await hanoiWorker.runTaskApiFirst(task, taskHex);
+      await completeTaskSuccess(repo, task, taskId, metadata);
+      logTaskPhase(taskHex, "SUCCESS", `Hanoi STS API — ${account.username}`);
+      return;
+    }
+
+    await hanoiWorker.beginBrowserSession();
+    browserSessionStarted = true;
+    logTaskPhase(taskHex, "BROWSER", "đã mở phiên Chromium (Hanoi — HANOI_USE_API_LOGIN=false)");
+
+    const storage = normalizeStorageState(account.storageStateJson ?? undefined);
+    context = await hanoiWorker.createDisposableContext(storage);
+    page = await context.newPage();
+
+    const metadata = await hanoiWorker.runTask(page, task, taskHex);
+    await completeTaskSuccess(repo, task, taskId, metadata);
+    logTaskPhase(taskHex, "SUCCESS", `Hanoi Playwright — ${account.username}`);
+  } catch (err) {
+    const msg = formatError(err);
+    await completeTaskFailed(repo, task, taskId, msg);
+    logTaskPhase(taskHex, "FAILED", msg.split("\n")[0]?.slice(0, 500) ?? "unknown error");
+  } finally {
+    if (page && env.playwrightPauseBeforeCloseMs > 0) {
+      logger.info(
+        `[playwright] Tạm dừng ${env.playwrightPauseBeforeCloseMs}ms trước khi đóng trang (PLAYWRIGHT_PAUSE_BEFORE_CLOSE_MS)...`,
+      );
+      await new Promise((r) => setTimeout(r, env.playwrightPauseBeforeCloseMs));
+    }
+    if (page) {
+      await page.close().catch(() => undefined);
+    }
+    if (context) {
+      await context.close().catch(() => undefined);
+    }
+    if (browserSessionStarted) {
+      await hanoiWorker.endBrowserSession();
+      logTaskPhase(taskHex, "BROWSER_CLOSED", "đã kết thúc phiên Chromium cho task Hanoi");
+    }
+  }
+}
+
 export async function claimAndProcessNext(
   repo: TaskRepository,
   evnWorker: EVNCPCWorker,
   npcWorker: EVNNPCWorker,
   workerInstanceId: string,
+  hanoiWorker?: EVNHanoiWorker,
 ): Promise<boolean> {
   const task = await repo.claimNextPending(workerInstanceId);
   if (!task) return false;
   if (task.provider === "EVN_NPC") {
     await processNpcTask(task, repo, npcWorker);
+  } else if (task.provider === "EVN_HANOI") {
+    if (!hanoiWorker) {
+      throw new Error("EVN_HANOI task nhưng hanoiWorker chưa được cấu hình trong TaskRunner");
+    }
+    await processHanoiTask(task, repo, hanoiWorker);
   } else {
     await processTask(task, repo, evnWorker);
   }

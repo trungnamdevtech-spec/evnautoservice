@@ -10,6 +10,8 @@ import type {
 } from "../../types/electricityBill.js";
 import type { NpcPdfKind } from "../npc/npcElectricityBillId.js";
 import { npcBillKey } from "../npc/npcElectricityBillId.js";
+import type { HanoiPdfKind } from "../hanoi/hanoiElectricityBillId.js";
+import { hanoiBillKey } from "../hanoi/hanoiElectricityBillId.js";
 
 /**
  * Version parser — tăng khi thay đổi logic để biết cần re-parse những file cũ.
@@ -17,8 +19,9 @@ import { npcBillKey } from "../npc/npcElectricityBillId.js";
  * thứ tự dòng công tơ, serial trước "Khung giờ thấp điểm", Ngày ký có khoảng trắng, MST có "-").
  * v3: NPC một số mẫu dùng `Kỳ hóa đơn: Tháng mm/yyyy (...)` (không có chữ "Kỳ n") — cần `npc.kyTrongKy` từ tên file/API.
  * v4: PDF hóa đơn thanh toán NPC (`XemHoaDon_NPC`) — mẫu HĐ GTGT / VAT, không có dòng `Kỳ hóa đơn` (khác PDF thông báo).
+ * v5: EVN Hà Nội — cùng mẫu parse với NPC/CPC (shim qua `npc` + `applyHanoiBillOverrides`).
  */
-export const PARSER_VERSION = 4;
+export const PARSER_VERSION = 5;
 
 /** Dùng pdf-parse v2: new PDFParse({ data, verbosity }) → getText() → .text */
 async function extractPdfText(buffer: Buffer): Promise<string> {
@@ -129,6 +132,22 @@ export interface ParseElectricityBillPdfOptions {
    * `kyTrongKy` (1–3): bắt buộc khi PDF dùng dòng `Tháng mm/yyyy` thay vì `Kỳ n - mm/yyyy` — lấy từ tên file `_ky{n}_` hoặc API TraCuu.
    */
   npc?: { npcIdHdon: string; kyTrongKy?: 1 | 2 | 3; npcPdfKind?: NpcPdfKind };
+  /**
+   * Không dùng kèm `npc`. Parse nội dung giống NPC (thông báo / GTGT) nhưng ghi `provider: EVN_HANOI` và `billKey` hanoi:*.
+   */
+  hanoi?: { idHdon: string; kyTrongKy?: 1 | 2 | 3; pdfKind: HanoiPdfKind };
+}
+
+function applyHanoiBillOverrides(
+  bill: ElectricityBill,
+  hanoi: { idHdon: string; pdfKind: HanoiPdfKind },
+): void {
+  bill.billKey = hanoiBillKey(hanoi.idHdon, hanoi.pdfKind);
+  bill.provider = "EVN_HANOI";
+  bill.hanoiIdHdon = hanoi.idHdon;
+  bill.hanoiPdfKind = hanoi.pdfKind;
+  delete bill.npcIdHdon;
+  delete bill.npcPdfKind;
 }
 
 export async function parseElectricityBillPdf(
@@ -141,6 +160,10 @@ export async function parseElectricityBillPdf(
 ): Promise<ParseResult> {
   let rawText: string;
 
+  if (options?.npc && options?.hanoi) {
+    return { success: false, error: "npc và hanoi không được dùng cùng lúc trong parseElectricityBillPdf" };
+  }
+
   try {
     const buffer = await readFile(pdfPath);
     rawText = await extractPdfText(buffer);
@@ -151,16 +174,21 @@ export async function parseElectricityBillPdf(
     };
   }
 
+  const npcOpt =
+    options?.npc ??
+    (options?.hanoi
+      ? {
+          npcIdHdon: options.hanoi.idHdon,
+          kyTrongKy: options.hanoi.kyTrongKy ?? 1,
+          npcPdfKind: (options.hanoi.pdfKind === "gtgt" ? "thanh_toan" : "thong_bao") as NpcPdfKind,
+        }
+      : undefined);
+
   try {
-    const bill = extractFields(
-      rawText,
-      pdfPath,
-      invoiceId,
-      maKhachHang,
-      maDonViQuanLy,
-      meta,
-      options?.npc,
-    );
+    const bill = extractFields(rawText, pdfPath, invoiceId, maKhachHang, maDonViQuanLy, meta, npcOpt);
+    if (options?.hanoi) {
+      applyHanoiBillOverrides(bill, options.hanoi);
+    }
     return { success: true, bill };
   } catch (err) {
     return {

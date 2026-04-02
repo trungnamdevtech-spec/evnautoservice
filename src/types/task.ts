@@ -38,7 +38,7 @@ export interface ScrapeTask {
   _id?: ObjectId;
   status: TaskStatus;
   workerId?: string;
-  provider: "EVN_CPC" | "EVN_NPC";
+  provider: "EVN_CPC" | "EVN_NPC" | "EVN_HANOI";
   /** JSON string hoặc object — session/cookie cho storageState */
   sessionData?: string | Record<string, unknown>;
   /**

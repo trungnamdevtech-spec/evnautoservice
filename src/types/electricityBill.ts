@@ -37,7 +37,7 @@ export interface ThreeFrames<T> {
  *   - status
  */
 /** Nguồn dữ liệu: CPC (API + PDF) hoặc NPC (TraCuu + PDF base64). */
-export type ElectricityProvider = "EVN_CPC" | "EVN_NPC";
+export type ElectricityProvider = "EVN_CPC" | "EVN_NPC" | "EVN_HANOI";
 
 export interface ElectricityBill {
   _id?: ObjectId;
@@ -56,6 +56,10 @@ export interface ElectricityBill {
    * Bản ghi cũ có thể thiếu field (coi như thông báo).
    */
   npcPdfKind?: "thong_bao" | "thanh_toan";
+  /** Chỉ EVN_HANOI: id hóa đơn từ API Tra cứu / XemHoaDon (chuỗi số). */
+  hanoiIdHdon?: string;
+  /** Chỉ EVN_HANOI: tiền điện (TD) vs GTGT — hai PDF một kỳ. */
+  hanoiPdfKind?: "tien_dien" | "gtgt";
 
   // ── Liên kết với invoice_items ─────────────────────────────────────────────
   /** ID hóa đơn — CPC: ID_HDON; NPC: surrogate (npcInvoiceIdSurrogateFromIdHdon) */

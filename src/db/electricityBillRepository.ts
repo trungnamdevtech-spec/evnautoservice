@@ -3,6 +3,8 @@ import { getMongoDb } from "./mongo.js";
 import type { ElectricityBill, ElectricityProvider } from "../types/electricityBill.js";
 import type { NpcPdfKind } from "../services/npc/npcElectricityBillId.js";
 import { npcBillKey } from "../services/npc/npcElectricityBillId.js";
+import type { HanoiPdfKind } from "../services/hanoi/hanoiElectricityBillId.js";
+import { hanoiBillKey } from "../services/hanoi/hanoiElectricityBillId.js";
 import { PARSER_VERSION } from "../services/pdf/ElectricityBillParser.js";
 import type { ElectricityBillRegionScope } from "./electricityBillRegionScope.js";
 import { mergeFilterWithRegion } from "./electricityBillRegionScope.js";
@@ -158,6 +160,39 @@ export class ElectricityBillRepository {
           npcIdHdon,
           npcPdfKind: kind,
           provider: "EVN_NPC" as const,
+          invoiceId,
+          pdfPath,
+          status: "error",
+          parseError: error.slice(0, 1000),
+          parseVersion: PARSER_VERSION,
+          parsedAt: now,
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now },
+      },
+      { upsert: true },
+    );
+  }
+
+  /** Đánh dấu parse lỗi cho một bản ghi EVN HANOI (theo idHdon + loại PDF). */
+  async markHanoiError(
+    idHdon: string,
+    invoiceId: number,
+    pdfPath: string,
+    error: string,
+    kind: HanoiPdfKind = "tien_dien",
+  ): Promise<void> {
+    const c = await this.col();
+    const now = new Date();
+    const billKey = hanoiBillKey(idHdon, kind);
+    await c.updateOne(
+      { billKey },
+      {
+        $set: {
+          billKey,
+          hanoiIdHdon: idHdon,
+          hanoiPdfKind: kind,
+          provider: "EVN_HANOI" as const,
           invoiceId,
           pdfPath,
           status: "error",
