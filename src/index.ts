@@ -1,3 +1,4 @@
+import "./polyfills/installPdfjsDomPolyfills.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { env } from "./config/env.js";

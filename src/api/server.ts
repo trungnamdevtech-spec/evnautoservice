@@ -1,3 +1,4 @@
+import "../polyfills/installPdfjsDomPolyfills.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -9,6 +10,7 @@ import { healthRouter } from "./routes/healthRouter.js";
 import { tasksRouter } from "./routes/tasksRouter.js";
 import { pdfRouter } from "./routes/pdfRouter.js";
 import { npcRouter } from "./routes/npcRouter.js";
+import { hanoiRouter } from "./routes/hanoiRouter.js";
 import { env } from "../config/env.js";
 import { logger as appLogger } from "../core/logger.js";
 import {
@@ -57,6 +59,11 @@ app.use("*", async (c, next) => {
     await next();
     return;
   }
+  // Public payment share landing page cho khách hàng click
+  if (c.req.path.startsWith("/pay/")) {
+    await next();
+    return;
+  }
   // Cho phép preflight CORS đi qua
   if (c.req.method === "OPTIONS") {
     await next();
@@ -69,16 +76,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// ── Routes ────────────────────────────────────────────────────────────────────
-app.route("/api/tasks",   tasksRouter);
-app.route("/api/bills",   billsRouter);
-app.route("/api/export",  exportRouter);
-app.route("/api/stats",   statsRouter);
-app.route("/api/health",  healthRouter);
-app.route("/api/pdf",     pdfRouter);
-app.route("/api/npc",     npcRouter);
-
-// ── Root: API map (G5 — discovery; version đồng bộ contract.ts + catalog) ─────
+// ── Root: API map (G5 — discovery; đăng ký trước route con để GET / luôn ổn định) ─
 app.get("/", (c) =>
   c.json({
     service: "EVN AutoCheck API",
@@ -138,6 +136,18 @@ app.get("/", (c) =>
         "POST /api/npc/tasks":                               "Tạo task quét NPC { npcAccountId, ky, thang, nam }",
         "POST /api/npc/tasks/enqueue-all-enabled":          "Quét mọi account enabled: cùng kỳ, mỗi task TB + GTGT (env), không tham số GTGT riêng",
       },
+      hanoi: {
+        "POST /api/hanoi/accounts":                         "Thêm tài khoản Hà Nội { username, password, label? } (cần HANOI_CREDENTIALS_SECRET)",
+        "POST /api/hanoi/accounts/bulk":                   "Import hàng loạt { accounts: [{ username, password, label? }] }",
+        "POST /api/hanoi/accounts/replace-bulk":           "Xóa hết hanoi_accounts + nạp JSON (cần HANOI_ALLOW_ACCOUNT_REPLACE_BULK + confirmation)",
+        "POST /api/hanoi/online-payment-link":             "{ hanoiAccountId, maKhachHang? } → 202 + taskId; poll GET /api/tasks/:taskId",
+        "GET  /api/hanoi/accounts?enabledOnly=&limit=&skip=&username=": "Danh sách hoặc ?username|maKhachHang=MA_KH → 1 account",
+        "PATCH /api/hanoi/accounts/:id":                   "{ enabled } hoặc { password } — đổi MK xóa disabledReason",
+        "GET  /api/hanoi/bills?maKhachHang=&limit=":       "Danh sách electricity_bills (EVN_HANOI)",
+        "POST /api/hanoi/ensure-bill":                     "Agent: { username|maKhachHang, ky, thang, nam } → cache_hit hoặc 202+taskId",
+        "POST /api/hanoi/tasks":                           "Tạo task quét Hanoi { hanoiAccountId, ky, thang, nam }",
+        "POST /api/hanoi/tasks/enqueue-all-enabled":       "Quét mọi account Hanoi enabled: cùng kỳ/tháng/năm",
+      },
       pdf: {
         "GET /api/pdf/npc/:idHdon":
           "Tải PDF NPC (?kind=tt|thanh_toan = HĐ thanh toán; mặc định thông báo)",
@@ -157,6 +167,16 @@ app.get("/", (c) =>
     },
   }),
 );
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+app.route("/api/tasks", tasksRouter);
+app.route("/api/bills", billsRouter);
+app.route("/api/export", exportRouter);
+app.route("/api/stats", statsRouter);
+app.route("/api/health", healthRouter);
+app.route("/api/pdf", pdfRouter);
+app.route("/api/npc", npcRouter);
+app.route("/api/hanoi", hanoiRouter);
 
 // ── 404 fallback ──────────────────────────────────────────────────────────────
 app.notFound((c) =>

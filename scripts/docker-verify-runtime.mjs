@@ -2,6 +2,7 @@
  * Chạy trong Dockerfile sau `npm ci --omit=dev` để fail build sớm nếu thiếu module runtime.
  * Không phụ thuộc devDependencies.
  */
+await import("./installPdfjsDomPolyfills.mjs");
 await Promise.all([
   import("archiver"),
   import("hono"),
