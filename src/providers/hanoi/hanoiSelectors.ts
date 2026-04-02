@@ -14,6 +14,26 @@ export const hanoiSelectors = {
   /** Thông báo lỗi dạng div — phòng trường hợp site thay class */
   errorMessageAlt: ".alert-danger",
   /**
+   * Các vị trí lỗi thường gặp (Angular / Material / toast) — thử lần lượt trong readHanoiErrorMessage.
+   */
+  errorMessageCandidates: [
+    "p.alert-danger.error-message",
+    ".alert-danger",
+    "[role='alert']",
+    "mat-error",
+    ".mat-mdc-form-field-error",
+    ".mat-error",
+    ".mdc-form-field__error",
+    ".text-danger",
+    ".invalid-feedback",
+    ".error-message",
+    ".message-error",
+    "snack-bar-container .mat-mdc-snack-bar-label",
+    ".mat-mdc-snack-bar-label",
+    ".toast-error",
+    ".toast-body",
+  ],
+  /**
    * Captcha image — EVN Hà Nội hiện tại chưa có captcha trên màn đăng nhập,
    * nhưng giữ selector để xử lý khi site bổ sung sau.
    */

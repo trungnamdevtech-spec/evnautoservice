@@ -16,7 +16,7 @@ export const billsRouter = new Hono();
 /**
  * Quy tắc: maKhachHang là chuẩn tra cứu chính.
  * Tất cả route đều nhận maKhachHang dạng uppercase tự động.
- * Query `region` hoặc `provider`: EVN_CPC (mặc định) | EVN_NPC | all — không trộn miền nếu không yêu cầu all.
+ * Query `region` hoặc `provider`: EVN_CPC (mặc định) | EVN_NPC | EVN_HANOI | all — không trộn miền nếu không yêu cầu all.
  */
 
 // ── GET /bills/customers — danh sách tất cả mã khách hàng ───────────────────

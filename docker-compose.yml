@@ -44,7 +44,7 @@ services:
     shm_size: "3gb" # cần tăng size để tránh memory crash khi có nhiều task cùng lúc.
     volumes:
       - ./output/pdfs:/app/output/pdfs
-      # File Excel tài khoản NPC (username / password) — map từ host; đường dẫn mặc định ./data/npc-accounts.xlsx
+      # Excel tài khoản: NPC (npc-accounts.xlsx), EVN Hà Nội (hanoi-accounts.xlsx) — map từ host
       - ./data:/app/data
     depends_on:
       mongo:

@@ -1,13 +1,21 @@
 /**
  * Phản hồi GET `/api/TraCuu/GetThongTinHoaDon` (evnhanoi.vn) — Bearer token.
- * Một tháng có thể có nhiều kỳ (ky 1, 2, …); mỗi dòng là một kỳ (tiền điện + GTGT trong cùng bản ghi).
+ *
+ * **`data.dmThongTinHoaDonList`**: danh sách các **kỳ ghi chỉ số / hóa đơn** trong **cùng tháng–năm**
+ * cho cặp `(maDonViQuanLy, maKhang)`. Một tháng có **tối đa 3 kỳ**, **ít nhất 1 kỳ** (`ky` ∈ {1,2,3}).
+ * Cùng lúc có thể xuất hiện nhiều dòng (ví dụ `ky: 1` và `ky: 2`) — dùng `distinctKyInRows` để biết tháng đó có mấy kỳ.
+ *
+ * Mỗi dòng có **`idHdon`** — tham số gửi sang `XemHoaDonByMaKhachHang` để lấy PDF:
+ * một kỳ thường tải **hai** loại: thông báo / tiền điện (`loaiHdon` TD) và hóa đơn GTGT (theo cấu hình `HANOI_PDF_LOAI_*`).
  */
 export interface HanoiDmThongTinHoaDonItem {
   maDonViQuanLy: string;
+  /** Khóa tra cứu + tải PDF (Cmis) — mỗi kỳ một `idHdon`. */
   idHdon: number;
   maKhang: string;
   maKhtt: string;
   maSogcs: string;
+  /** Kỳ trong tháng (1–3). Nhiều dòng cùng tháng/năm ⇒ nhiều kỳ. */
   ky: number;
   thang: number;
   nam: number;
@@ -38,6 +46,7 @@ export interface HanoiDmThongTinHoaDonItem {
 }
 
 export interface HanoiGetThongTinHoaDonData {
+  /** Các dòng tra cứu theo kỳ; đếm `distinct ky` trong list ⇒ số kỳ có dữ liệu trong tháng (≤ 3). */
   dmThongTinHoaDonList?: HanoiDmThongTinHoaDonItem[];
 }
 

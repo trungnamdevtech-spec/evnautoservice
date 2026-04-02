@@ -98,7 +98,7 @@ app.get("/", (c) =>
         "POST /api/tasks/:taskId/retry":                    "Tạo lại task từ FAILED",
       },
       bills: {
-        "GET /api/bills/customers":                        "Danh sách mã KH (?region=EVN_CPC|EVN_NPC|all, mặc định EVN_CPC)",
+        "GET /api/bills/customers":                        "Danh sách mã KH (?region=EVN_CPC|EVN_NPC|EVN_HANOI|all, mặc định EVN_CPC)",
         "GET /api/bills/customer/:maKH":                   "Lịch sử HĐ 1 KH (?region=&ky=&thang=&nam=)",
         "GET /api/bills/customer/:maKH/latest":            "HĐ mới nhất (?region=)",
         "GET /api/bills/customer/:maKH/due-soon?days=7":   "HĐ KH sắp đến hạn (?region=)",
@@ -137,18 +137,30 @@ app.get("/", (c) =>
         "POST /api/npc/tasks/enqueue-all-enabled":          "Quét mọi account enabled: cùng kỳ, mỗi task TB + GTGT (env), không tham số GTGT riêng",
       },
       hanoi: {
-        "POST /api/hanoi/accounts":                         "Thêm tài khoản Hà Nội { username, password, label? } (cần HANOI_CREDENTIALS_SECRET)",
+        "POST /api/hanoi/accounts":                         "Thêm tài khoản Hà Nội { username, password, label? } — production: bật API_KEY_AUTH_ENABLED + header x-api-key",
         "POST /api/hanoi/accounts/bulk":                   "Import hàng loạt { accounts: [{ username, password, label? }] }",
         "POST /api/hanoi/accounts/replace-bulk":           "Xóa hết hanoi_accounts + nạp JSON (cần HANOI_ALLOW_ACCOUNT_REPLACE_BULK + confirmation)",
-        "POST /api/hanoi/online-payment-link":             "{ hanoiAccountId, maKhachHang? } → 202 + taskId; poll GET /api/tasks/:taskId",
-        "GET  /api/hanoi/accounts?enabledOnly=&limit=&skip=&username=": "Danh sách hoặc ?username|maKhachHang=MA_KH → 1 account",
-        "PATCH /api/hanoi/accounts/:id":                   "{ enabled } hoặc { password } — đổi MK xóa disabledReason",
+        "GET  /api/hanoi/accounts/stats":                  "Đếm tài khoản (total, enabled, disabled, wrongPassword) — không trả mật khẩu",
+        "GET  /api/hanoi/accounts/list-all":             "Toàn bộ TK phân trang (?credentialStatus=all|ok|wrong_password&skip=&limit=) + credentialStatus — không password",
+        "GET  /api/hanoi/accounts/wrong-credentials":      "Danh sách sai mật khẩu STS (?skip=&limit=) — chỉ metadata, không password",
+        "POST /api/hanoi/sync-known-ma":                   "Lần đầu/backfill: đồng bộ userinfo+hợp đồng→knownMaKhachHang — 202+jobId; cần HANOI_SYNC_KNOWN_MA_API_ENABLED; job lưu MongoDB hanoi_sync_jobs",
+        "GET  /api/hanoi/sync-known-ma/jobs":              "Danh sách job gần đây (?skip=&limit=)",
+        "GET  /api/hanoi/sync-known-ma/jobs/:jobId":       "Chi tiết job; running quá lâu → tự failed (HANOI_SYNC_JOB_STALE_RUNNING_MS)",
+        "POST /api/hanoi/online-payment-link":             "Link thanh toán (API GetListThongTinNoKhachHang) — selector account + maKhachHang? → 202+taskId; poll task; tài liệu docs_autocheckenv/HANOI_AGENT_API.md",
+        "GET  /api/hanoi/accounts?enabledOnly=&limit=&skip=&username=": "Danh sách hoặc ?username= hoặc ?maKhachHang=MA_KH (không gộp)",
+        "GET  /api/hanoi/contracts?hanoiAccountId=|maKhachHang=": "Hợp đồng đã đồng bộ (hanoi_contracts)",
+        "PATCH /api/hanoi/accounts/:id":                   "{ password?, verifyCredential?, correlationId?, enabled? } — đổi MK + thử STS; webhook HANOI_ACCOUNT_WEBHOOK_URL",
+        "PUT  /api/hanoi/accounts/:id/password":          "Chỉ đổi mật khẩu { password, verifyCredential?, correlationId? } — Postman",
         "GET  /api/hanoi/bills?maKhachHang=&limit=":       "Danh sách electricity_bills (EVN_HANOI)",
-        "POST /api/hanoi/ensure-bill":                     "Agent: { username|maKhachHang, ky, thang, nam } → cache_hit hoặc 202+taskId",
-        "POST /api/hanoi/tasks":                           "Tạo task quét Hanoi { hanoiAccountId, ky, thang, nam }",
+        "POST /api/hanoi/ensure-bill":                     "Agent: DB trước — { username|maKhachHang, ky, thang, nam } → cache_hit | webhook hanoi.ensure_bill | 202+taskId",
+        "POST /api/hanoi/tasks":                           "Tạo task quét { hanoiAccountId | maKhachHang, ky, thang, nam }",
         "POST /api/hanoi/tasks/enqueue-all-enabled":       "Quét mọi account Hanoi enabled: cùng kỳ/tháng/năm",
       },
       pdf: {
+        "GET /api/pdf/hanoi/:invoiceId":
+          "Tải PDF EVN Hà Nội (electricity_bills — invoiceId surrogate, provider EVN_HANOI)",
+        "GET /api/pdf/hanoi/customer/:maKH/list?limit=":
+          "Liệt kê PDF Hanoi đã parse + downloadUrl",
         "GET /api/pdf/npc/:idHdon":
           "Tải PDF NPC (?kind=tt|thanh_toan = HĐ thanh toán; mặc định thông báo)",
         "GET /api/pdf/npc/customer/:maKH/list?limit=":

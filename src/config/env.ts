@@ -221,6 +221,26 @@ export const env = {
    * `true`: in log timing đăng nhập Hanoi ra console.
    */
   hanoiLoginTraceTiming: parseBoolSafe(process.env.HANOI_LOGIN_TRACE_TIMING, false),
+  /**
+   * Sau khi bấm Đăng nhập (Playwright): chờ tối thiểu trước khi đánh giá kết quả.
+   * Trang EVN Hà Nội thường redirect sau ~3–6s — mặc định 6000ms.
+   */
+  hanoiLoginPostSubmitMinSettleMs: Math.max(
+    0,
+    parseIntSafe(process.env.HANOI_LOGIN_POST_SUBMIT_MIN_MS, 6000),
+  ),
+  /**
+   * Thời gian chờ tối đa cho redirect hoặc hiện thông báo lỗi sau submit (ms).
+   */
+  hanoiLoginPostSubmitMaxMs: Math.max(
+    5000,
+    parseIntSafe(process.env.HANOI_LOGIN_POST_SUBMIT_MAX_MS, 25_000),
+  ),
+  /** Thời gian quét DOM để đọc thông báo lỗi sau submit (ms). */
+  hanoiLoginErrorProbeMs: Math.max(
+    3000,
+    parseIntSafe(process.env.HANOI_LOGIN_ERROR_PROBE_MS, 8000),
+  ),
 
   /**
    * `true` (mặc định): đăng nhập EVN Hà Nội qua API `POST .../connect/token` — không mở Chromium.
@@ -275,4 +295,29 @@ export const env = {
   /** Ký HMAC-SHA256 body (hex) — header `X-Agent-Task-Signature: sha256=<hex>`. Để trống = không ký. */
   agentTaskWebhookSecret: (process.env.AGENT_TASK_WEBHOOK_SECRET ?? "").trim(),
   agentTaskWebhookTimeoutMs: Math.max(1000, parseIntSafe(process.env.AGENT_TASK_WEBHOOK_TIMEOUT_MS, 15_000)),
+
+  /**
+   * POST JSON khi PATCH mật khẩu Hanoi + kết quả kiểm tra STS (tách biệt webhook task).
+   * Header ký (tuỳ chọn): `X-Hanoi-Account-Signature: sha256=<hex>`.
+   */
+  hanoiAccountWebhookUrl: (process.env.HANOI_ACCOUNT_WEBHOOK_URL ?? "").trim(),
+  hanoiAccountWebhookSecret: (process.env.HANOI_ACCOUNT_WEBHOOK_SECRET ?? "").trim(),
+  hanoiAccountWebhookTimeoutMs: Math.max(1000, parseIntSafe(process.env.HANOI_ACCOUNT_WEBHOOK_TIMEOUT_MS, 15_000)),
+
+  /**
+   * Cho phép agent POST `/api/hanoi/sync-known-ma` (đồng bộ userinfo/hợp đồng → `knownMaKhachHang`).
+   * Mặc định tắt — bật `HANOI_SYNC_KNOWN_MA_API_ENABLED=true` khi triển khai.
+   */
+  hanoiSyncKnownMaApiEnabled: parseBoolSafe(process.env.HANOI_SYNC_KNOWN_MA_API_ENABLED, false),
+
+  /**
+   * Job đồng bộ ở trạng thái `running` quá N ms (API restart / treo) → GET job sẽ ghi nhận `failed`.
+   * Mặc định 4 giờ.
+   */
+  hanoiSyncJobStaleRunningMs: Math.max(
+    60_000,
+    parseIntSafe(process.env.HANOI_SYNC_JOB_STALE_RUNNING_MS, 14_400_000),
+  ),
+  /** Giữ tối đa N job trong `hanoi_sync_jobs` (xóa bản ghi cũ sau mỗi lần hoàn thành). */
+  hanoiSyncJobMaxKeep: Math.max(10, parseIntSafe(process.env.HANOI_SYNC_JOB_MAX_KEEP, 500)),
 };

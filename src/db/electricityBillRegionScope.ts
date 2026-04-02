@@ -2,12 +2,13 @@ import type { Filter } from "mongodb";
 import type { ElectricityBill } from "../types/electricityBill.js";
 
 /**
- * Phạm vi miền điện khi truy vấn `electricity_bills` (tránh trộn CPC / NPC).
+ * Phạm vi miền điện khi truy vấn `electricity_bills` (tránh trộn CPC / NPC / Hanoi).
  * - EVN_CPC: CPC + bản ghi cũ không có `provider` (coi là CPC).
  * - EVN_NPC: chỉ Điện lực miền Bắc (NPC).
+ * - EVN_HANOI: chỉ EVN Hà Nội.
  * - all: không lọc miền — chỉ dùng khi cần thống kê toàn hệ thống (rõ ràng).
  */
-export type ElectricityBillRegionScope = "EVN_CPC" | "EVN_NPC" | "all";
+export type ElectricityBillRegionScope = "EVN_CPC" | "EVN_NPC" | "EVN_HANOI" | "all";
 
 const CPC_OR_LEGACY: Filter<ElectricityBill> = {
   $or: [{ provider: "EVN_CPC" as const }, { provider: { $exists: false } }],
@@ -17,11 +18,12 @@ const CPC_OR_LEGACY: Filter<ElectricityBill> = {
 export function regionScopeToFilter(scope: ElectricityBillRegionScope): Filter<ElectricityBill> {
   if (scope === "all") return {};
   if (scope === "EVN_NPC") return { provider: "EVN_NPC" as const };
+  if (scope === "EVN_HANOI") return { provider: "EVN_HANOI" as const };
   return CPC_OR_LEGACY;
 }
 
 /**
- * Query string: region hoặc provider — EVN_CPC | EVN_NPC | all (mặc định EVN_CPC).
+ * Query string: region hoặc provider — EVN_CPC | EVN_NPC | EVN_HANOI | all (mặc định EVN_CPC).
  */
 export function parseRegionScopeFromQuery(
   region: string | undefined,
@@ -30,6 +32,7 @@ export function parseRegionScopeFromQuery(
   // Dùng || thay vì ?? để `region=` rỗng vẫn đọc được `provider=`
   const raw = (region?.trim() || provider?.trim() || "EVN_CPC").toUpperCase();
   if (raw === "EVN_NPC" || raw === "NPC") return "EVN_NPC";
+  if (raw === "EVN_HANOI" || raw === "HANOI" || raw === "EVNHN") return "EVN_HANOI";
   if (raw === "ALL" || raw === "MIXED" || raw === "*") return "all";
   return "EVN_CPC";
 }

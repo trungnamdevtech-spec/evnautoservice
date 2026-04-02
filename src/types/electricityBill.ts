@@ -32,6 +32,8 @@ export interface ThreeFrames<T> {
  * Indexes:
  *   - invoiceId              (unique)
  *   - maKhachHang + ky + thang + nam
+ *   - provider + maKhachHang + thang + nam (EVN_HANOI — mọi kỳ trong tháng)
+ *   - provider + hanoiIdHdon (sparse)
  *   - hanThanhToan
  *   - maDonViQuanLy
  *   - status

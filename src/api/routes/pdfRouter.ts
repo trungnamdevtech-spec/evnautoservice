@@ -113,6 +113,65 @@ pdfRouter.get("/npc/customer/:maKhachHang/list", async (c) => {
   });
 });
 
+// GET /api/pdf/hanoi/:invoiceId — PDF đã lưu từ electricity_bills (EVN_HANOI), theo invoiceId surrogate
+pdfRouter.get("/hanoi/:invoiceId", async (c) => {
+  const invoiceId = Number.parseInt(c.req.param("invoiceId"), 10);
+  if (!Number.isFinite(invoiceId)) {
+    return c.json({ error: "invoiceId phải là số nguyên" }, 400);
+  }
+  const bill = await billRepo.findByProviderInvoiceId("EVN_HANOI", invoiceId);
+  if (!bill?.pdfPath) {
+    return c.json(
+      { error: `Không tìm thấy PDF EVN_HANOI đã parse cho invoiceId=${invoiceId}`, provider: "EVN_HANOI" },
+      404,
+    );
+  }
+  if (bill.status !== "parsed") {
+    return c.json(
+      { error: "PDF chưa parse thành công hoặc đang lỗi", status: bill.status, parseError: bill.parseError },
+      404,
+    );
+  }
+  const idHint = bill.hanoiIdHdon ?? String(invoiceId);
+  const kindHint = bill.hanoiPdfKind === "gtgt" ? "_gtgt" : "_td";
+  const hint = `${bill.maKhachHang}_hanoi_${String(idHint).replace(/[^a-zA-Z0-9+=_-]/g, "_").slice(0, 40)}${kindHint}.pdf`;
+  try {
+    return await servePdfByPath(bill.pdfPath, hint);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "Không đọc được file PDF trên disk", detail: msg, pdfPath: bill.pdfPath }, 500);
+  }
+});
+
+// GET /api/pdf/hanoi/customer/:maKhachHang/list?limit=20 — liệt kê bản ghi parse + URL tải
+pdfRouter.get("/hanoi/customer/:maKhachHang/list", async (c) => {
+  const maKhachHang = c.req.param("maKhachHang").toUpperCase();
+  const limitRaw = Number.parseInt(c.req.query("limit") ?? "20", 10);
+  const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1), 200);
+  const rows = await billRepo.find({
+    maKhachHang,
+    provider: "EVN_HANOI",
+    status: "parsed",
+    limit,
+    sort: { "kyBill.nam": -1, "kyBill.thang": -1, "kyBill.ky": -1 },
+  });
+  return c.json({
+    provider: "EVN_HANOI",
+    maKhachHang,
+    total: rows.length,
+    data: rows.map((b) => ({
+      invoiceId: b.invoiceId,
+      hanoiIdHdon: b.hanoiIdHdon ?? null,
+      hanoiPdfKind: b.hanoiPdfKind ?? "tien_dien",
+      kyBill: b.kyBill,
+      tongTienThanhToan: b.tongKet.tongTienThanhToan,
+      hanThanhToan: b.hanThanhToan,
+      pdfPath: path.relative(process.cwd(), path.resolve(b.pdfPath)).replace(/\\/g, "/"),
+      downloadUrl: `/api/pdf/hanoi/${b.invoiceId}`,
+    })),
+  });
+});
+
 // GET /api/pdf/invoice/:invoiceId?fileType=TBAO|HDON
 pdfRouter.get("/invoice/:invoiceId", async (c) => {
   const invoiceId = Number.parseInt(c.req.param("invoiceId"), 10);

@@ -3,14 +3,14 @@ import type {
   HanoiContractNormalized,
   HanoiGetDanhSachHopDongResponse,
 } from "../../types/hanoiHopDong.js";
+import { buildHanoiApiAuthHeaders } from "./hanoiApiHeaders.js";
 
-const DEFAULT_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
-
-const REFERER_PATH = "/dashboard/home/quan-ly-chung";
+/** Khớp curl / web — cùng path với `HANOI_GET_THONG_TIN_HOA_DON_REFERER_PATH` (tra cứu hóa đơn). */
+const HOP_DONG_REFERER_PATH = "/dashboard/home/quan-ly-hoa-don/tra-cuu-hoa-don";
 
 /**
- * Trích mảng hợp đồng từ `data` — hỗ trợ data là mảng, hoặc object chứa *List / *Items.
+ * Trích mảng hợp đồng từ `data`.
+ * API EVN Hà Nội: `{ data: { thongTinHopDongDtos: [...] } }`.
  */
 export function extractHopDongRowsFromResponse(data: unknown): Record<string, unknown>[] {
   if (data == null) return [];
@@ -19,6 +19,11 @@ export function extractHopDongRowsFromResponse(data: unknown): Record<string, un
   }
   if (typeof data !== "object") return [];
   const o = data as Record<string, unknown>;
+
+  const dtoList = o["thongTinHopDongDtos"];
+  if (Array.isArray(dtoList)) {
+    return dtoList.filter((x): x is Record<string, unknown> => x !== null && typeof x === "object");
+  }
 
   const preferKeys = Object.keys(o).filter((k) =>
     /hopdong|hopDong|HopDong|khachhang|KhachHang|list|List|items|Items|dm/i.test(k),
@@ -37,12 +42,105 @@ export function extractHopDongRowsFromResponse(data: unknown): Record<string, un
   return [];
 }
 
+/** Kiểm tra phản hồi JSON sau GET GetDanhSachHopDong (envelope + `thongTinHopDongDtos` + extract). */
+export interface HanoiHopDongValidationResult {
+  ok: boolean;
+  reasons: string[];
+  thongTinHopDongDtosLength: number;
+  extractedRowsLength: number;
+  firstRowHasMaKh: boolean;
+}
+
+export function validateHanoiHopDongResponse(
+  parsed: HanoiGetDanhSachHopDongResponse,
+): HanoiHopDongValidationResult {
+  const reasons: string[] = [];
+  if (parsed.isError === true) {
+    return {
+      ok: false,
+      reasons: [`isError: ${String(parsed.message ?? "")}`],
+      thongTinHopDongDtosLength: 0,
+      extractedRowsLength: 0,
+      firstRowHasMaKh: false,
+    };
+  }
+
+  const data = parsed.data;
+  let thongTinHopDongDtosLength = 0;
+  if (data != null && typeof data === "object" && !Array.isArray(data)) {
+    const arr = (data as Record<string, unknown>)["thongTinHopDongDtos"];
+    if (Array.isArray(arr)) thongTinHopDongDtosLength = arr.length;
+  }
+
+  const rows = extractHopDongRowsFromResponse(data);
+  if (thongTinHopDongDtosLength > 0 && thongTinHopDongDtosLength !== rows.length) {
+    reasons.push(
+      `thongTinHopDongDtos.length (${thongTinHopDongDtosLength}) !== extractHopDongRows (${rows.length})`,
+    );
+  }
+
+  const firstRowHasMaKh = rows[0] != null && extractMaKhachHangFromRow(rows[0]) != null;
+  if (rows.length > 0 && !firstRowHasMaKh) {
+    reasons.push("Có dòng extract nhưng dòng đầu thiếu maKhachHang");
+  }
+
+  if (rows.length > 0) {
+    const r0 = rows[0]!;
+    const dv = r0["maDonViQuanLy"] ?? r0["maDvql"];
+    if (dv == null || String(dv).trim() === "") {
+      reasons.push("Dòng đầu thiếu maDonViQuanLy/maDvql");
+    }
+  }
+
+  if (data != null && typeof data === "object" && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(obj, "thongTinHopDongDtos") && rows.length > 0) {
+      reasons.push(
+        "data không có key thongTinHopDongDtos (API đổi shape?) — extract vẫn có dòng",
+      );
+    }
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    thongTinHopDongDtosLength,
+    extractedRowsLength: rows.length,
+    firstRowHasMaKh,
+  };
+}
+
 function pickStr(row: Record<string, unknown>, keys: string[]): string | undefined {
   for (const k of keys) {
     const v = row[k];
     if (typeof v === "string" && v.trim()) return v.trim();
     if (typeof v === "number" && Number.isFinite(v)) return String(v);
   }
+  return undefined;
+}
+
+function pickNum(row: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
+function pickBool(row: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "boolean") return v;
+  }
+  return undefined;
+}
+
+/** `namSinh` có thể null hoặc chuỗi năm. */
+function pickNamSinh(row: Record<string, unknown>): string | undefined {
+  const v = row["namSinh"];
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return undefined;
 }
 
@@ -64,16 +162,34 @@ export function extractMaKhachHangFromRow(row: Record<string, unknown>): string 
 
 export function normalizeHopDongRow(row: Record<string, unknown>): HanoiContractNormalized {
   return {
-    maDvql: pickStr(row, ["maDvql", "ma_dvi_qly", "maDViQLy", "maDonViQuanLy"]),
-    tenKhachHang: pickStr(row, ["tenKhang", "tenKH", "tenKhachHang", "tenKHANG", "hoTen"]),
-    diaChi: pickStr(row, ["diaChi", "dchi", "DCHI_KHANG", "diaChiKH"]),
+    id: pickStr(row, ["id"]),
+    maDvql: pickStr(row, ["maDonViQuanLy", "maDvql", "ma_dvi_qly", "maDViQLy"]),
+    tenKhachHang: pickStr(row, ["tenKhachHang", "tenKhang", "tenKH", "tenKHANG", "hoTen"]),
+    diaChi: pickStr(row, ["diaChiDungDien", "diaChi", "dchi", "DCHI_KHANG", "diaChiKH"]),
     maSoGCS: pickStr(row, ["maSogcs", "maSoGCS", "MA_SOGCS", "soGCS"]),
     soHopDong: pickStr(row, ["soHopDong", "soHD", "so_hd"]),
+    dienThoai: pickStr(row, ["dienThoai"]),
+    email: pickStr(row, ["email"]),
+    maSoThue: pickStr(row, ["maSoThue"]),
+    mucDichSuDungDien: pickStr(row, ["mucDichSuDungDien"]),
+    soHoSuDungDien: pickNum(row, ["soHoSuDungDien"]),
+    loaiKhachHang: pickNum(row, ["loaiKhachHang"]),
+    isHopDongChinhChu: pickBool(row, ["isHopDongChinhChu"]),
+    isMacDinh: pickBool(row, ["isMacDinh"]),
+    trangThaiHopDong: pickNum(row, ["trangThaiHopDong"]),
+    dienThoaiNhanTin: pickStr(row, ["dienThoaiNhanTin"]),
+    namSinh: pickNamSinh(row),
+    soCmt: pickStr(row, ["soCmt"]),
+    userNameOld: pickStr(row, ["userNameOld"]),
+    userId: pickStr(row, ["userId"]),
   };
 }
 
 /**
- * GET danh sách hợp đồng / KH theo user đăng nhập (Bearer).
+ * GET `/api/TraCuu/GetDanhSachHopDongByUserName` — Bearer.
+ *
+ * - `rows`: mỗi phần tử là **một dòng đầy đủ** từ `data` (sau `extractHopDongRowsFromResponse`).
+ * - Lưu DB: `hanoi_contracts.raw` = nguyên object dòng đó; `normalized` chỉ là subset tiện tra cứu.
  */
 export async function fetchHanoiDanhSachHopDong(accessToken: string): Promise<{
   response: HanoiGetDanhSachHopDongResponse;
@@ -81,17 +197,12 @@ export async function fetchHanoiDanhSachHopDong(accessToken: string): Promise<{
 }> {
   const base = env.evnHanoiBaseUrl.replace(/\/$/, "");
   const url = `${base}/api/TraCuu/GetDanhSachHopDongByUserName`;
-  const referer = `${base}${REFERER_PATH}`;
+  const referer = `${base}${HOP_DONG_REFERER_PATH}`;
   const timeoutMs = Math.max(10_000, env.hanoiHopDongTimeoutMs);
 
   const res = await fetch(url, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      Referer: referer,
-      "User-Agent": DEFAULT_UA,
-    },
+    headers: buildHanoiApiAuthHeaders(accessToken, referer),
     signal: AbortSignal.timeout(timeoutMs),
   });
 

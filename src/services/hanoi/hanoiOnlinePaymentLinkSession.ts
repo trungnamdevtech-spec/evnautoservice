@@ -32,8 +32,11 @@ export async function runHanoiOnlinePaymentLinkWithApi(
   const ma = maKhachHang.trim().toUpperCase() || account.username.trim().toUpperCase();
   logTaskPhase(traceId, "HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán (API) ma=${ma}`);
   const token = await getOrRefreshHanoiAccessToken(account, accountId, passwordPlain, hanoiRepo, secret);
-  await ensureHanoiUserInfo(account, accountId, token, hanoiRepo);
-  return fetchHanoiOnlinePaymentLink(ma, step, { accessToken: token });
+  const userInfo = await ensureHanoiUserInfo(account, accountId, token, hanoiRepo);
+  return fetchHanoiOnlinePaymentLink(ma, step, {
+    accessToken: token,
+    maDViQLy: userInfo.maDvql,
+  });
 }
 
 /**
@@ -49,6 +52,10 @@ export async function runHanoiOnlinePaymentLinkWithPlaywright(
   traceId: string,
 ): Promise<HanoiOnlinePaymentLinkResult> {
   const step = env.hanoiStepTimeoutMs;
+  const secret = env.hanoiCredentialsSecret.trim();
+  if (!secret) {
+    throw new Error("Thiếu HANOI_CREDENTIALS_SECRET");
+  }
   const hanoiRepo = new HanoiAccountRepository();
   await worker.beginBrowserSession();
   const ctx = await worker.createDisposableContext(
@@ -59,7 +66,14 @@ export async function runHanoiOnlinePaymentLinkWithPlaywright(
     page = await ctx.newPage();
     await worker.prepareHanoiSession(page, account, accountId, passwordPlain, traceId, step);
     const ma = maKhachHang.trim().toUpperCase() || account.username.trim().toUpperCase();
-    const result = await fetchHanoiOnlinePaymentLink(ma, step, { page });
+    logTaskPhase(traceId, "HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán (STS sau Playwright) ma=${ma}`);
+    const token = await getOrRefreshHanoiAccessToken(account, accountId, passwordPlain, hanoiRepo, secret);
+    const userInfo = await ensureHanoiUserInfo(account, accountId, token, hanoiRepo);
+    const result = await fetchHanoiOnlinePaymentLink(ma, step, {
+      accessToken: token,
+      maDViQLy: userInfo.maDvql,
+      page,
+    });
     const storage = await page.context().storageState();
     await hanoiRepo.updateSession(accountId, JSON.stringify(storage), new Date());
     return result;

@@ -30,3 +30,50 @@ Script `*:dist` dùng **`node dist/scripts/...`** (đã có trong image), **khô
 **Webhook (tuỳ chọn):** `AGENT_TASK_WEBHOOK_URL` — worker POST JSON khi task SUCCESS/FAILED (mọi EVN_CPC / EVN_NPC). Ký tùy chọn: `AGENT_TASK_WEBHOOK_SECRET` → header `X-Agent-Task-Signature: sha256=<hex>`. Timeout: `AGENT_TASK_WEBHOOK_TIMEOUT_MS` (mặc định 15000).
 
 Phiên bản API: header `X-API-Version` / `src/api/contract.ts`.
+
+---
+
+## EVN Hà Nội — Docker & nạp tài khoản từ Excel
+
+**Biến môi trường:** `HANOI_CREDENTIALS_SECRET` (bắt buộc, ≥16 ký tự), `HANOI_STS_CLIENT_ID`, `HANOI_STS_CLIENT_SECRET`, cùng `MONGODB_URI` / `API_KEY` như các phần khác. Tham chiếu: `docs_autocheckenv/HANOI_AGENT_API.md`.
+
+**File Excel:** đặt trên host tại `./data/hanoi-accounts.xlsx` (đã map volume `./data` → `/app/data` trong container). Cột **A = username**, **B = password**, **C = label** (tuỳ chọn). File `.xlsx` trong `data/` **không** được commit git (`.gitignore`) — chỉ đặt trên máy chủ.
+
+### Chạy stack
+
+```bash
+docker compose up -d --build
+docker compose logs -f app
+```
+
+### Nạp / thay tài khoản Hanoi **trong container** (dùng `dist`, không cần tsx)
+
+**Import thêm** (bỏ qua username đã tồn tại):
+
+```bash
+docker compose exec app npm run import:hanoi-accounts:xlsx:dist
+```
+
+Hoặc chỉ định đường dẫn trong container:
+
+```bash
+docker compose exec app node dist/scripts/import-hanoi-accounts-xlsx.js /app/data/hanoi-accounts.xlsx
+```
+
+**Xóa hết `hanoi_accounts` + nạp lại từ file + xóa task Hanoi PENDING** (nguy hiểm — chỉ khi chắc chắn):
+
+```bash
+docker compose exec app npm run replace:hanoi-accounts:clean:dist
+```
+
+### Chạy ngoài Docker (repo clone trên máy có Node)
+
+```bash
+npm ci
+npm run build
+npm run import:hanoi-accounts:xlsx -- ./data/hanoi-accounts.xlsx
+# hoặc thay toàn bộ:
+npm run replace:hanoi-accounts:clean
+```
+
+Sau khi nạp tài khoản: kiểm tra `GET /api/health`, `GET /api/hanoi/accounts?limit=5` (kèm header `x-api-key` nếu bật auth).

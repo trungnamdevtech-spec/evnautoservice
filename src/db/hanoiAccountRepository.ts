@@ -25,6 +25,7 @@ export class HanoiAccountRepository {
     if (!this.indexesEnsured) {
       this.indexesEnsured = true;
       await c.createIndex({ username: 1 }, { unique: true }).catch(() => undefined);
+      await c.createIndex({ knownMaKhachHang: 1 }, { background: true }).catch(() => undefined);
     }
     return c;
   }
@@ -55,6 +56,68 @@ export class HanoiAccountRepository {
   async findById(id: ObjectId): Promise<HanoiAccount | null> {
     const c = await this.col();
     return c.findOne({ _id: id });
+  }
+
+  /**
+   * Tài khoản có `knownMaKhachHang` chứa mã (đã chuẩn hoá uppercase).
+   */
+  async findByKnownMaKhachHang(maKhachHang: string): Promise<HanoiAccount[]> {
+    const ma = maKhachHang.trim().toUpperCase();
+    if (!ma) return [];
+    const c = await this.col();
+    return c
+      .find({
+        knownMaKhachHang: ma,
+        enabled: true,
+        $nor: [{ disabledReason: "wrong_password" }],
+      })
+      .limit(20)
+      .toArray();
+  }
+
+  /**
+   * Fallback khi chưa rebuild `knownMaKhachHang`: khớp `userInfo.maKhachHang` (không phân biệt hoa thường).
+   */
+  async findByUserInfoMaKhachHang(maKhachHang: string): Promise<HanoiAccount[]> {
+    const ma = maKhachHang.trim().toUpperCase();
+    if (!ma) return [];
+    const c = await this.col();
+    const escaped = ma.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return c
+      .find({
+        enabled: true,
+        $nor: [{ disabledReason: "wrong_password" }],
+        "userInfo.maKhachHang": { $regex: new RegExp(`^${escaped}$`, "i") },
+      })
+      .limit(20)
+      .toArray();
+  }
+
+  /**
+   * Gộp mã KH từ `userInfo` + `hanoi_contracts` — gọi sau userinfo / hợp đồng.
+   */
+  async rebuildKnownMaKhachHang(accountId: ObjectId): Promise<string[]> {
+    const c = await this.col();
+    const acc = await this.findById(accountId);
+    if (!acc) return [];
+
+    const set = new Set<string>();
+    const uiMa = acc.userInfo?.maKhachHang?.trim().toUpperCase();
+    if (uiMa) set.add(uiMa);
+
+    const contracts = await contractRepo.findByAccountId(accountId);
+    for (const row of contracts) {
+      const m = row.maKhachHang?.trim().toUpperCase();
+      if (m) set.add(m);
+    }
+
+    const arr = [...set].sort((a, b) => a.localeCompare(b, "vi"));
+    const now = new Date();
+    await c.updateOne(
+      { _id: accountId },
+      { $set: { knownMaKhachHang: arr, updatedAt: now } },
+    );
+    return arr;
   }
 
   async findByUsername(username: string): Promise<HanoiAccount | null> {
@@ -88,6 +151,66 @@ export class HanoiAccountRepository {
       .skip(skip)
       .limit(Math.min(limit, 500))
       .toArray();
+  }
+
+  /** Thống kê nhanh cho dashboard / agent (không trả mật khẩu). */
+  async countStats(): Promise<{
+    total: number;
+    enabled: number;
+    disabled: number;
+    wrongPassword: number;
+  }> {
+    const c = await this.col();
+    const [total, enabled, disabled, wrongPassword] = await Promise.all([
+      c.countDocuments({}),
+      c.countDocuments({ enabled: true }),
+      c.countDocuments({ enabled: false }),
+      c.countDocuments({ disabledReason: "wrong_password" }),
+    ]);
+    return { total, enabled, disabled, wrongPassword };
+  }
+
+  /** Tài khoản bị đánh dấu sai mật khẩu (STS/worker). */
+  async findWrongPasswordAccounts(skip = 0, limit = 200): Promise<HanoiAccount[]> {
+    const c = await this.col();
+    return c
+      .find({ disabledReason: "wrong_password" })
+      .sort({ username: 1 })
+      .skip(skip)
+      .limit(Math.min(limit, 500))
+      .toArray();
+  }
+
+  async countWrongPasswordAccounts(): Promise<number> {
+    const c = await this.col();
+    return c.countDocuments({ disabledReason: "wrong_password" });
+  }
+
+  /**
+   * Danh sách phân trang cho agent: `all` | tài khoản đăng nhập được (`ok`) | chỉ sai mật khẩu (`wrong_password`).
+   */
+  async listAccountsByCredentialFilter(
+    filter: "all" | "ok" | "wrong_password",
+    skip: number,
+    limit: number,
+  ): Promise<{ total: number; accounts: HanoiAccount[] }> {
+    const c = await this.col();
+    const q =
+      filter === "wrong_password"
+        ? { disabledReason: "wrong_password" as const }
+        : filter === "ok"
+          ? {
+              enabled: true,
+              $nor: [{ disabledReason: "wrong_password" }],
+            }
+          : {};
+    const sk = Math.max(0, skip);
+    const lim = Math.min(Math.max(1, limit), 500);
+    const [total, accounts] = await Promise.all([
+      c.countDocuments(q),
+      c.find(q).sort({ username: 1 }).skip(sk).limit(lim).toArray(),
+    ]);
+    return { total, accounts };
   }
 
   async updateSession(
@@ -167,6 +290,7 @@ export class HanoiAccountRepository {
         },
       },
     );
+    await this.rebuildKnownMaKhachHang(id).catch(() => undefined);
   }
 
   async setEnabled(id: ObjectId, enabled: boolean): Promise<boolean> {

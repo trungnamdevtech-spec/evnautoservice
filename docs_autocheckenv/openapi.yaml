@@ -1,0 +1,1187 @@
+openapi: 3.0.3
+info:
+  title: EVN AutoCheck API
+  description: |
+    HTTP API cho worker **EVN CPC** (Điện lực miền Trung) và **EVN NPC** (Điện lực miền Bắc),
+    truy vấn `electricity_bills`, task quét, PDF.
+
+    - Bối cảnh miền / provider: `docs_autocheckenv/PROJECT_CONTEXT.md`
+    - Catalog người đọc / máy đọc: `agent-gateway-api-catalog.md`, `agent-gateway-api-catalog.json`
+    - Ràng buộc gateway: `evn-autocheck-integration-constraints.md`
+    - NPC thông báo + HĐ GTGT (query `kind` / `npcPdfKind`): `docs_autocheckenv/agent-gateway-npc-gtgt-contract.md`
+    - Phiên bản đồng bộ header `X-API-Version` với `src/api/contract.ts` (hiện **1.6.1**).
+    - **EVN Hà Nội (Agent):** `docs_autocheckenv/HANOI_AGENT_API.md` — ensure-bill, tasks, online-payment-link, webhook `hanoi.ensure_bill`.
+    - **1.4.5+:** `GET` bills (trừ npc/invoiceId) / export / stats — document đủ query `region`, `provider` và các tham số kỳ (`ky`, `thang`, `nam`, `days`) theo code.
+  version: 1.6.0
+
+servers:
+  - url: http://localhost:1371
+    description: Local (API_PORT)
+  - url: https://evnservice.example.com
+    description: Production — thay bằng EVN_AUTOCHECK_BASE_URL thực tế
+
+tags:
+  - name: discovery
+  - name: tasks
+  - name: npc
+  - name: hanoi
+  - name: bills
+  - name: export
+  - name: stats
+  - name: health
+  - name: pdf
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Bắt buộc khi API_KEY_AUTH_ENABLED=true (áp dụng gần như mọi route; thêm header này khi tích hợp production)
+  schemas:
+    NpcPdfKindQuery:
+      type: string
+      enum: [all, thong_bao, thanh_toan, tt, vat]
+      default: all
+      description: |
+        Lọc loại bản ghi NPC. `tt` / `vat` tương đương `thanh_toan` (HĐ GTGT thanh toán).
+    NpcPdfKindParam:
+      type: string
+      enum: [thong_bao, thanh_toan, tt, payment]
+      default: thong_bao
+      description: |
+        Mặc định = PDF thông báo tiền điện. `tt` / `thanh_toan` / `payment` = HĐ GTGT (XemHoaDon_NPC).
+
+  parameters:
+    RegionScopeQuery:
+      name: region
+      in: query
+      required: false
+      schema:
+        type: string
+      description: |
+        Phạm vi miền điện trên `electricity_bills`: **`EVN_CPC`** (mặc định — CPC + bản ghi cũ không `provider`),
+        **`EVN_NPC`** hoặc alias **`NPC`**, **`EVN_HANOI`** (alias `HANOI`, `EVNHN`), hoặc **`all`** (không lọc miền; alias `ALL`, `MIXED`, `*`).
+        Code: `parseRegionScopeFromQuery` trong `electricityBillRegionScope.ts`.
+    ProviderScopeQuery:
+      name: provider
+      in: query
+      required: false
+      schema:
+        type: string
+      description: |
+        **Cùng ý nghĩa với `region`.** Nếu `region` rỗng thì đọc `provider`; nếu cả hai có thì ưu tiên `region`.
+
+paths:
+  /:
+    get:
+      tags: [discovery]
+      summary: Bản đồ endpoint + serviceVersion + catalogReference
+      security: []
+      responses:
+        "200":
+          description: JSON discovery
+          headers:
+            X-API-Version:
+              schema:
+                type: string
+            X-Catalog-Version:
+              schema:
+                type: string
+            X-Constraints-Doc-Version:
+              schema:
+                type: string
+
+  /api/tasks:
+    post:
+      tags: [tasks]
+      summary: Tạo task quét EVN CPC
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ky, thang, nam]
+              properties:
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer, minimum: 2020, maximum: 2100 }
+    get:
+      tags: [tasks]
+      summary: Danh sách tasks
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+        - in: query
+          name: skip
+          schema: { type: integer }
+
+  /api/tasks/active:
+    get:
+      tags: [tasks]
+      summary: Tasks PENDING + RUNNING
+
+  /api/tasks/counts:
+    get:
+      tags: [tasks]
+      summary: Đếm tasks theo status
+
+  /api/tasks/{taskId}:
+    get:
+      tags: [tasks]
+      summary: Chi tiết task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/tasks/{taskId}/cancel:
+    post:
+      tags: [tasks]
+      summary: Hủy task PENDING
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/tasks/{taskId}/retry:
+    post:
+      tags: [tasks]
+      summary: Tạo lại task từ FAILED
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/npc/accounts:
+    post:
+      tags: [npc]
+      summary: Thêm tài khoản NPC (mật khẩu mã hóa AES-256-GCM trên server)
+      description: |
+        Yêu cầu biến môi trường `NPC_CREDENTIALS_SECRET` trên server.
+        Lưu collection `npc_accounts`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  description: Mã KH / tên đăng nhập CSKH NPC
+                password:
+                  type: string
+                  format: password
+                label:
+                  type: string
+      responses:
+        "201":
+          description: Đã tạo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, description: ObjectId hex }
+                  username: { type: string }
+                  label: { type: string, nullable: true }
+        "400":
+          description: Lỗi validation hoặc thiếu NPC_CREDENTIALS_SECRET
+        "409":
+          description: Username đã tồn tại
+    get:
+      tags: [npc]
+      summary: Danh sách tài khoản NPC (không trả mật khẩu)
+      parameters:
+        - in: query
+          name: enabledOnly
+          schema: { type: boolean }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 500 }
+        - in: query
+          name: skip
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        username: { type: string }
+                        enabled: { type: boolean }
+                        label: { type: string, nullable: true }
+                        lastLoginAt: { type: string, format: date-time, nullable: true }
+                        hasStoredSession: { type: boolean }
+                        createdAt: { type: string, format: date-time }
+                        updatedAt: { type: string, format: date-time }
+
+  /api/npc/accounts/bulk:
+    post:
+      tags: [npc]
+      summary: Import hàng loạt tài khoản NPC
+      description: Trùng username → bỏ qua (không ghi đè). Tối đa 2000 dòng/request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accounts]
+              properties:
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    required: [username, password]
+                    properties:
+                      username: { type: string }
+                      password: { type: string, format: password }
+                      label: { type: string }
+      responses:
+        "200":
+          description: Import hoàn tất (inserted / skippedDuplicates / errors tùy response)
+
+  /api/npc/accounts/replace-bulk:
+    post:
+      tags: [npc]
+      summary: Xóa toàn bộ npc_accounts rồi nạp lại từ JSON
+      description: |
+        **Nguy hiểm** — chỉ bật trên server khi `NPC_ALLOW_ACCOUNT_REPLACE_BULK=true`.
+
+        Thay thế toàn bộ user từ file Excel (khuyến nghị): CLI `npm run replace:npc-accounts:xlsx -- file.xlsx --confirm-delete-all`
+        (không cần endpoint này).
+
+        Body cần `confirmation` chính xác `DELETE_ALL_NPC_ACCOUNTS` và mảng `accounts` (tối đa 2000).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmation, accounts]
+              properties:
+                confirmation:
+                  type: string
+                  enum: [DELETE_ALL_NPC_ACCOUNTS]
+                  description: Chuỗi xác nhận cố định — bắt buộc khớp
+                accounts:
+                  type: array
+                  maxItems: 2000
+                  items:
+                    type: object
+                    required: [username, password]
+                    properties:
+                      username: { type: string }
+                      password: { type: string, format: password }
+                      label: { type: string }
+      responses:
+        "200":
+          description: Đã xóa và nạp lại (deleted, inserted, skippedDuplicates, errors)
+        "400":
+          description: Validation hoặc không có dòng hợp lệ — không xóa DB
+        "403":
+          description: FEATURE_DISABLED — chưa bật NPC_ALLOW_ACCOUNT_REPLACE_BULK
+
+  /api/npc/accounts/{id}:
+    patch:
+      tags: [npc]
+      summary: Bật/tắt tài khoản hoặc đổi mật khẩu NPC
+      description: |
+        Gửi `{ "enabled": boolean }` **hoặc** `{ "password": string }` (đổi MK sẽ bật lại tài khoản).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, description: ObjectId hex }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Không tìm thấy
+
+  /api/npc/bills:
+    get:
+      tags: [npc]
+      summary: Danh sách electricity_bills đã parse (EVN_NPC) theo mã KH
+      parameters:
+        - in: query
+          name: maKhachHang
+          required: true
+          schema: { type: string }
+          description: Alias maKH
+        - in: query
+          name: maKH
+          schema: { type: string }
+        - in: query
+          name: npcPdfKind
+          schema:
+            $ref: "#/components/schemas/NpcPdfKindQuery"
+          description: Lọc thông báo vs HĐ GTGT; `all` = cả hai
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Thiếu maKhachHang
+
+  /api/npc/ensure-bill:
+    post:
+      tags: [npc]
+      summary: Agent — có dữ liệu trong DB hay cần xếp hàng quét
+      description: |
+        Body `username` hoặc `maKhachHang` (trùng MA_KH) + `ky`,`thang`,`nam` (alias period/month/year).
+
+        - `npcPdfKind` / `billKind` (tuỳ chọn): chỉ để **kiểm tra cache** loại bản ghi (`thong_bao` vs `thanh_toan`).
+          Một task quét luôn chạy pipeline đầy đủ (thông báo + HĐ GTGT khi `NPC_DOWNLOAD_PAYMENT_PDF=true`) — không có tham số “chỉ tải GTGT”.
+        - Phản hồi có thể gồm `npcScanPipeline` (includesPaymentVatPdf, samePeriodParamsAsNotification).
+
+        - **200** `outcome: cache_hit` — đã có bản parse đúng kỳ **và đúng loại đang hỏi**.
+        - **202** `outcome: queued` | `already_queued` — chưa có DB; đã tạo task hoặc task đang chạy.
+        Lỗi validation có field `code` (ví dụ `VALIDATION_KY_RANGE`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ky, thang, nam]
+              properties:
+                username: { type: string, description: Cùng MA_KH đăng nhập CSKH NPC }
+                maKhachHang: { type: string }
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer, minimum: 2020, maximum: 2100 }
+                period: { type: integer, description: alias ky }
+                month: { type: integer, description: alias thang }
+                year: { type: integer, description: alias nam }
+                npcPdfKind:
+                  type: string
+                  enum: [thong_bao, thanh_toan, tt, vat, hd_gtgt]
+                  description: Loại cần kiểm tra cache (mặc định thông báo)
+                billKind:
+                  type: string
+                  description: Alias của npcPdfKind
+      responses:
+        "200":
+          description: cache_hit — đã có bill trong DB
+        "202":
+          description: queued — đã xếp hàng quét hoặc đã có task active
+        "400":
+          description: Validation
+        "404":
+          description: NPC_ACCOUNT_NOT_FOUND — chưa có bản ghi npc_accounts
+
+  /api/npc/tasks:
+    post:
+      tags: [npc]
+      summary: Tạo task PENDING cho worker EVN_NPC
+      description: |
+        Task `scrape_tasks.provider = EVN_NPC`. Payload gồm `npcAccountId` và kỳ/tháng/năm
+        (truyền `ky`/`thang`/`nam` hoặc tương đương `period`/`month`/`year`).
+        Worker đăng nhập (captcha type 14), lưu `storageState` vào `npc_accounts`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [npcAccountId]
+              properties:
+                npcAccountId:
+                  type: string
+                  description: ObjectId hex của bản ghi trong npc_accounts
+                accountId:
+                  type: string
+                  description: Alias của npcAccountId
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer }
+                period: { type: integer, description: alias của ky }
+                month: { type: integer, description: alias của thang }
+                year: { type: integer, description: alias của nam }
+      responses:
+        "201":
+          description: Đã tạo task
+        "200":
+          description: Đã có task PENDING/RUNNING cho cùng tài khoản + kỳ
+        "400":
+          description: Validation
+        "404":
+          description: Không có tài khoản NPC
+
+  /api/npc/tasks/enqueue-all-enabled:
+    post:
+      tags: [npc]
+      summary: Xếp hàng quét cho mọi tài khoản NPC đang bật (cùng kỳ/tháng/năm)
+      description: |
+        Lặp toàn bộ `npc_accounts` enabled; với mỗi account, nếu chưa có task PENDING/RUNNING cho cùng kỳ thì tạo task.
+        Mỗi task: PDF thông báo + HĐ GTGT (khi bật env), **không** tham số tách GTGT.
+        Giới hạn tối đa 5000 tài khoản mỗi lần gọi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ky, thang, nam]
+              properties:
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer }
+                period: { type: integer }
+                month: { type: integer }
+                year: { type: integer }
+      responses:
+        "201":
+          description: Đã tạo ít nhất một task mới
+        "200":
+          description: Không tạo task mới (đã đủ task active hoặc không có account)
+        "400":
+          description: Validation hoặc BATCH_ACCOUNT_LIMIT
+
+  /api/bills/customers:
+    get:
+      tags: [bills]
+      summary: Danh sách mã khách hàng
+      description: Query `region` / `provider` lọc miền (mặc định EVN_CPC).
+      parameters:
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/customer/{maKhachHang}:
+    get:
+      tags: [bills]
+      summary: Lịch sử hóa đơn KH
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+        - name: ky
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 3 }
+          description: Lọc tuỳ chọn theo kỳ trong tháng
+        - name: thang
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+
+  /api/bills/customer/{maKhachHang}/latest:
+    get:
+      tags: [bills]
+      summary: Hóa đơn mới nhất
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/customer/{maKhachHang}/due-soon:
+    get:
+      tags: [bills]
+      summary: Hóa đơn sắp đến hạn
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+        - name: days
+          in: query
+          schema: { type: integer, default: 7 }
+          description: Cửa sổ ngày tới hạn
+
+  /api/bills/customer/{maKhachHang}/history:
+    get:
+      tags: [bills]
+      summary: Lịch sử tiêu thụ
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/period:
+    get:
+      tags: [bills]
+      summary: Hóa đơn trong kỳ
+      parameters:
+        - name: ky
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 3 }
+        - name: thang
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          required: true
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/month:
+    get:
+      tags: [bills]
+      summary: Hóa đơn trong tháng
+      parameters:
+        - name: thang
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          required: true
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/due-soon:
+    get:
+      tags: [bills]
+      summary: Tất cả HĐ sắp đến hạn
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 7 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/bills/npc/{idHdon}:
+    get:
+      tags: [bills]
+      summary: Tra electricity_bills theo id_hdon NPC (URL-encode, ví dụ ký tự =)
+      parameters:
+        - name: idHdon
+          in: path
+          required: true
+          schema: { type: string }
+          description: Giá trị id_hdon từ Tra cứu NPC (encodeURIComponent)
+        - in: query
+          name: kind
+          schema:
+            $ref: "#/components/schemas/NpcPdfKindParam"
+      responses:
+        "200":
+          description: `{ provider: EVN_NPC, data: ElectricityBill }`
+        "404":
+          description: Không tìm thấy
+
+  /api/bills/{invoiceId}:
+    get:
+      tags: [bills]
+      summary: Tra theo ID_HDON
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/export/period:
+    get:
+      tags: [export]
+      summary: Xuất Excel theo kỳ
+      parameters:
+        - name: ky
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 3 }
+        - name: thang
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          required: true
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/export/month:
+    get:
+      tags: [export]
+      summary: Xuất Excel theo tháng
+      parameters:
+        - name: thang
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          required: true
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/export/customer/{maKhachHang}:
+    get:
+      tags: [export]
+      summary: Xuất Excel lịch sử KH
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+        - name: ky
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 3 }
+        - name: thang
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+
+  /api/stats/month:
+    get:
+      tags: [stats]
+      summary: Thống kê theo tháng
+      parameters:
+        - name: nam
+          in: query
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+          description: Mặc định năm hiện tại nếu bỏ qua
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/stats/period:
+    get:
+      tags: [stats]
+      summary: Thống kê theo kỳ
+      parameters:
+        - name: ky
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 3 }
+        - name: thang
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: nam
+          in: query
+          required: true
+          schema: { type: integer, minimum: 2020, maximum: 2100 }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/stats/customer/{maKhachHang}/history:
+    get:
+      tags: [stats]
+      summary: Lịch sử tiêu thụ
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/RegionScopeQuery"
+        - $ref: "#/components/parameters/ProviderScopeQuery"
+
+  /api/health:
+    get:
+      tags: [health]
+      summary: Tổng quan
+      security: []
+
+  /api/health/db:
+    get:
+      tags: [health]
+      summary: MongoDB + đếm documents
+      security: []
+
+  /api/health/data-integrity:
+    get:
+      tags: [health]
+      summary: Cross-check invoice_items vs electricity_bills
+      security: []
+
+  /api/pdf/hanoi/{invoiceId}:
+    get:
+      tags: [pdf]
+      summary: Tải PDF EVN Hà Nội (electricity_bills)
+      description: |
+        `invoiceId` = surrogate trong `electricity_bills` với `provider: EVN_HANOI` (không dùng `/api/pdf/invoice` — route đó đọc `invoice_items` CPC).
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: application/pdf
+        "404":
+          description: Không tìm thấy hoặc chưa parse
+
+  /api/pdf/hanoi/customer/{maKhachHang}/list:
+    get:
+      tags: [pdf]
+      summary: Liệt kê PDF Hanoi đã lưu + downloadUrl
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+
+  /api/pdf/npc/{idHdon}:
+    get:
+      tags: [pdf]
+      summary: Tải file PDF NPC đã lưu theo id_hdon
+      description: |
+        Cần bản ghi `electricity_bills` đã parse thành công và `pdfPath` hợp lệ trên disk.
+        Thông báo và HĐ GTGT là **hai** bản ghi khác `npcIdHdon` — chọn đúng `kind`.
+      parameters:
+        - name: idHdon
+          in: path
+          required: true
+          schema: { type: string }
+        - in: query
+          name: kind
+          schema:
+            $ref: "#/components/schemas/NpcPdfKindParam"
+      responses:
+        "200":
+          description: application/pdf
+        "404":
+          description: Không tìm thấy hoặc parse lỗi
+
+  /api/pdf/npc/customer/{maKhachHang}/list:
+    get:
+      tags: [pdf]
+      summary: Liệt kê PDF NPC đã lưu của một mã khách hàng
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+
+  /api/pdf/invoice/{invoiceId}:
+    get:
+      tags: [pdf]
+      summary: Tải PDF theo invoiceId (CPC — ID_HDON)
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/pdf/customer/{maKhachHang}/latest:
+    get:
+      tags: [pdf]
+      summary: PDF mới nhất của KH
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/pdf/customer/{maKhachHang}/list:
+    get:
+      tags: [pdf]
+      summary: Liệt kê metadata PDF
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/pdf/customer/{maKhachHang}/zip:
+    get:
+      tags: [pdf]
+      summary: ZIP nhiều PDF của KH
+      parameters:
+        - name: maKhachHang
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/pdf/period/zip:
+    get:
+      tags: [pdf]
+      summary: ZIP PDF theo kỳ
+
+  # ── EVN Hà Nội ─────────────────────────────────────────────────────────────
+
+  /api/hanoi/accounts:
+    post:
+      tags: [hanoi]
+      summary: Thêm tài khoản EVN Hà Nội
+      description: Cần HANOI_CREDENTIALS_SECRET. Mật khẩu lưu mã hóa AES-256-GCM.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, description: Tên đăng nhập / mã khách hàng }
+                password: { type: string, description: Mật khẩu (lưu mã hóa) }
+                label: { type: string, description: Nhãn tuỳ chọn }
+      responses:
+        "201": { description: "{ id, username, label }" }
+        "409": { description: username đã tồn tại }
+    get:
+      tags: [hanoi]
+      summary: Danh sách tài khoản Hà Nội
+      description: |
+        Không query → danh sách phân trang.  
+        `?username=` → đúng 1 tài khoản theo tên đăng nhập.  
+        `?maKhachHang=` hoặc `?maKH=` → mọi tài khoản gắn MA_KH (userinfo/hợp đồng); không dùng cùng lúc với `username`.
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: Tìm 1 tài khoản theo username đăng nhập
+        - name: maKhachHang
+          in: query
+          schema: { type: string }
+          description: Tra cứu theo mã khách hàng (alias maKH)
+        - name: enabledOnly
+          in: query
+          schema: { type: string, enum: ["0", "1"] }
+        - name: skip
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200": { description: "{ accounts: [], matchedBy? }" }
+        "400": { description: Truyền cả username và maKhachHang }
+
+  /api/hanoi/accounts/bulk:
+    post:
+      tags: [hanoi]
+      summary: Import hàng loạt tài khoản Hà Nội
+      description: Tối đa 2000 bản ghi/request. Trùng username → skip.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accounts]
+              properties:
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    required: [username, password]
+                    properties:
+                      username: { type: string }
+                      password: { type: string }
+                      label: { type: string }
+      responses:
+        "200": { description: "{ inserted, skippedDuplicates, errors? }" }
+
+  /api/hanoi/accounts/replace-bulk:
+    post:
+      tags: [hanoi]
+      summary: Xóa toàn bộ + nạp lại (cần HANOI_ALLOW_ACCOUNT_REPLACE_BULK=true)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmation, accounts]
+              properties:
+                confirmation:
+                  type: string
+                  enum: [DELETE_ALL_HANOI_ACCOUNTS]
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    required: [username, password]
+                    properties:
+                      username: { type: string }
+                      password: { type: string }
+                      label: { type: string }
+      responses:
+        "200": { description: "{ deleted, inserted, skippedDuplicates }" }
+        "403": { description: FEATURE_DISABLED }
+
+  /api/hanoi/accounts/{id}:
+    patch:
+      tags: [hanoi]
+      summary: Cập nhật tài khoản Hà Nội (enable/disable hoặc đổi mật khẩu)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                password: { type: string }
+      responses:
+        "200": { description: Cập nhật thành công }
+        "404": { description: Không tìm thấy }
+
+  /api/hanoi/tasks:
+    post:
+      tags: [hanoi]
+      summary: Tạo task quét hóa đơn EVN Hà Nội
+      description: |
+        **Một** trong `hanoiAccountId` (hoặc alias `accountId`) **hoặc** `maKhachHang` (resolve đúng 1 account).
+        Kỳ/tháng/năm: `ky|period`, `thang|month`, `nam|year`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hanoiAccountId: { type: string, description: ObjectId hex }
+                accountId: { type: string, description: alias hanoiAccountId }
+                maKhachHang: { type: string, description: Resolve tài khoản — không dùng cùng hanoiAccountId }
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                period: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                month: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer, minimum: 2020, maximum: 2100 }
+                year: { type: integer, minimum: 2020, maximum: 2100 }
+      responses:
+        "201": { description: "{ taskId, status: PENDING, payload }" }
+        "200": { description: "isDuplicate: true — task PENDING/RUNNING cùng kỳ" }
+
+  /api/hanoi/tasks/enqueue-all-enabled:
+    post:
+      tags: [hanoi]
+      summary: Xếp hàng tất cả tài khoản Hanoi enabled (cùng kỳ/tháng/năm)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ky, thang, nam]
+              properties:
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                nam: { type: integer, minimum: 2020, maximum: 2100 }
+      responses:
+        "201": { description: "{ tasksCreated, skippedAlreadyActive, taskIdsSample }" }
+        "200": { description: Không có task mới }
+
+  /api/hanoi/ensure-bill:
+    post:
+      tags: [hanoi]
+      summary: "Agent: kiểm tra cache hoặc xếp hàng quét"
+      description: |
+        **Chỉ một** trong `username` (đăng nhập CSKH) hoặc `maKhachHang` (mã KH tra cứu).
+        Với `maKhachHang`: tra **DB trước** (đúng kỳ/tháng/năm), không cần resolve tài khoản nếu đã có `electricity_bills` parse.
+        Webhook `hanoi.ensure_bill` khi `cache_hit` hoặc `already_queued` (nếu `AGENT_TASK_WEBHOOK_URL` set).
+        Poll `GET /api/tasks/:taskId` khi `queued` / `already_queued`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Bắt buộc đủ kỳ/tháng/năm qua (ky|period), (thang|month), (nam|year) — code validate giống nhau.
+              properties:
+                username:
+                  type: string
+                  description: Tên đăng nhập CSKH (xor với maKhachHang)
+                maKhachHang:
+                  type: string
+                  description: Mã KH tra cứu (xor với username)
+                ky: { type: integer, minimum: 1, maximum: 3 }
+                period: { type: integer, minimum: 1, maximum: 3, description: alias ky }
+                thang: { type: integer, minimum: 1, maximum: 12 }
+                month: { type: integer, minimum: 1, maximum: 12, description: alias thang }
+                nam: { type: integer, minimum: 2020, maximum: 2100 }
+                year: { type: integer, minimum: 2020, maximum: 2100, description: alias nam }
+      responses:
+        "200": { description: "outcome: cache_hit — bill trong DB (tien_dien ưu tiên)" }
+        "202": { description: "outcome: queued | already_queued — taskId" }
+        "400": { description: VALIDATION_* / HANOI_ACCOUNT_DISABLED }
+        "404": { description: HANOI_ACCOUNT_NOT_FOUND / không resolve được MA }
+        "409": { description: AMBIGUOUS — nhiều tài khoản cho cùng MA_KH }
+
+  /api/hanoi/bills:
+    get:
+      tags: [hanoi]
+      summary: Danh sách electricity_bills EVN Hà Nội
+      parameters:
+        - name: maKhachHang
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200": { description: "{ provider: EVN_HANOI, total, data: [] }" }
+
+  /api/hanoi/online-payment-link:
+    post:
+      tags: [hanoi]
+      summary: Lấy link thanh toán EVN Hà Nội (API GetListThongTinNoKhachHang)
+      description: |
+        **Một** selector tài khoản: `hanoiAccountId` **hoặc** `hanoiAccountUsername` **hoặc** `maKhachHang` (resolve đúng 1 account).
+        Tuỳ chọn `maKhachHang` thứ hai — mã KH cần lấy link (normalize in hoa); mặc định lấy từ tài khoản.
+        Worker gọi STS + userinfo (`maDvql`) + POST `/api/TraCuu/GetListThongTinNoKhachHang` → trường `paymentUrl` = `urlThanhToan` EVN.
+        Mặc định **202** + taskId. Sync chỉ khi `HANOI_ONLINE_PAYMENT_LINK_SYNC_API_ENABLED=true` và `sync: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hanoiAccountId: { type: string, description: ObjectId hex }
+                hanoiAccountUsername: { type: string, description: Tên đăng nhập CSKH }
+                maKhachHang: { type: string, description: Chỉ để resolve account khi không có id/username }
+                sync: { type: boolean, description: Chạy đồng bộ — cần env bật }
+      responses:
+        "200":
+          description: Sync — `{ ok, paymentUrl?, code?, reason?, ... }` (chỉ khi env + sync)
+        "202": { description: "{ outcome: queued|already_queued, taskId }" }
+        "403": { description: FEATURE_DISABLED — HANOI_ONLINE_PAYMENT_LINK_API_ENABLED=false }
+        "400": { description: VALIDATION_* / tài khoản disabled / wrong_password }
+
+  /api/hanoi/contracts:
+    get:
+      tags: [hanoi]
+      summary: Hợp đồng đã đồng bộ (hanoi_contracts)
+      parameters:
+        - name: hanoiAccountId
+          in: query
+          schema: { type: string }
+          description: ObjectId hex — không dùng cùng maKhachHang
+        - name: maKhachHang
+          in: query
+          schema: { type: string }
+        - name: maKH
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 200 }
+      responses:
+        "200": { description: "{ filter, total, contracts: [] }" }
+        "400": { description: Thiếu query hoặc truyền cả hai filter }
+
+  /api/hanoi/accounts/stats:
+    get:
+      tags: [hanoi]
+      summary: Thống kê số lượng tài khoản (enabled/disabled/wrong_password)
+
+  /api/hanoi/accounts/list-all:
+    get:
+      tags: [hanoi]
+      summary: Danh sách toàn bộ có phân trang + credentialStatus
+      parameters:
+        - name: credentialStatus
+          in: query
+          schema: { type: string, enum: [all, ok, wrong_password] }
+        - name: skip
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+
+  /api/hanoi/accounts/wrong-credentials:
+    get:
+      tags: [hanoi]
+      summary: Tài khoản đánh dấu sai mật khẩu STS
+
+  /api/hanoi/sync-known-ma:
+    post:
+      tags: [hanoi]
+      summary: Tạo job đồng bộ knownMaKhachHang (cần HANOI_SYNC_KNOWN_MA_API_ENABLED)
+      responses:
+        "403": { description: FEATURE_DISABLED }
+
+  /api/hanoi/sync-known-ma/jobs:
+    get:
+      tags: [hanoi]
+      summary: Danh sách job đồng bộ gần đây
+
+  /api/hanoi/sync-known-ma/jobs/{jobId}:
+    get:
+      tags: [hanoi]
+      summary: Chi tiết một job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+
+  /api/hanoi/accounts/{id}/password:
+    put:
+      tags: [hanoi]
+      summary: Đổi mật khẩu (Postman-friendly)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+                verifyCredential: { type: boolean }
+                correlationId: { type: string }

@@ -8,6 +8,7 @@ import { TaskRepository } from "../db/taskRepository.js";
 import { AnticaptchaClient } from "../services/captcha/AnticaptchaClient.js";
 import { EVNCPCWorker } from "../providers/evn/EVNCPCWorker.js";
 import { EVNNPCWorker } from "../providers/npc/EVNNPCWorker.js";
+import { EVNHanoiWorker } from "../providers/hanoi/EVNHanoiWorker.js";
 import { claimAndProcessNext, createWorkerId } from "../worker/processTask.js";
 
 async function main(): Promise<void> {
@@ -16,10 +17,11 @@ async function main(): Promise<void> {
   const captcha = new AnticaptchaClient();
   const worker = new EVNCPCWorker(captcha);
   const npcWorker = new EVNNPCWorker(captcha);
+  const hanoiWorker = new EVNHanoiWorker(captcha);
   const wid = createWorkerId();
 
   console.info("[test:e2e] Đang claim và xử lý một task...");
-  const ok = await claimAndProcessNext(repo, worker, npcWorker, wid);
+  const ok = await claimAndProcessNext(repo, worker, npcWorker, wid, hanoiWorker);
 
   await closeMongo();
   // Browser đã được processTask đóng qua endBrowserSession khi task xong.

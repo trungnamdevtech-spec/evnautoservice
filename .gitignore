@@ -35,9 +35,15 @@ coverage/
 playwright-report/
 test-results/
 
-# Tài liệu / hợp đồng API — không đưa lên remote (chỉ giữ local)
-docs_autocheckenv/
+# Tài liệu nội bộ — mặc định không track; ngoại lệ dưới đây đưa lên repo
+docs_autocheckenv/**
+!docs_autocheckenv/HANOI_AGENT_API.md
+!docs_autocheckenv/openapi.yaml
 TESTING.md
+
+# File nhạy cảm tạm thời (không commit)
+npc-encrypted.json
+npc-encrypted-decrypted.xlsx
 
 # OS
 ehthumbs.db

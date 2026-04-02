@@ -11,7 +11,7 @@ export const exportRouter = new Hono();
 /**
  * Tất cả route trả về file .xlsx với Content-Disposition: attachment.
  * Quy tắc: maKhachHang là chuẩn chính; ky/thang/nam là tùy chọn lọc.
- * Query `region` hoặc `provider`: EVN_CPC (mặc định, gồm bản ghi CPC cũ) | EVN_NPC | all.
+ * Query `region` hoặc `provider`: EVN_CPC (mặc định, gồm bản ghi CPC cũ) | EVN_NPC | EVN_HANOI | all.
  */
 
 function xlsxResponse(buffer: Buffer, filename: string): Response {

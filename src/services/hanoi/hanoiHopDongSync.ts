@@ -6,6 +6,11 @@ import type { HanoiContractRepository } from "../../db/hanoiContractRepository.j
 import type { HanoiAccount } from "../../types/hanoiAccount.js";
 import { fetchHanoiDanhSachHopDong } from "./hanoiGetDanhSachHopDongClient.js";
 
+export type EnsureHanoiHopDongSnapshotOptions = {
+  /** Bỏ qua HANOI_HOP_DONG_REFRESH_MIN_MS — dùng khi backfill / đồng bộ hàng loạt. */
+  forceRefresh?: boolean;
+};
+
 /**
  * Đồng bộ danh sách hợp đồng / KH vào `hanoi_contracts` sau khi có Bearer.
  * Tôn trọng HANOI_HOP_DONG_REFRESH_MIN_MS (0 = luôn gọi API).
@@ -16,10 +21,12 @@ export async function ensureHanoiHopDongSnapshot(
   accessToken: string,
   hanoiRepo: HanoiAccountRepository,
   contractRepo: HanoiContractRepository,
+  options?: EnsureHanoiHopDongSnapshotOptions,
 ): Promise<{ rowCount: number; skipped: boolean; skippedNoMa: number }> {
   const minMs = env.hanoiHopDongRefreshMinMs;
   const now = Date.now();
   if (
+    !options?.forceRefresh &&
     minMs > 0 &&
     account.hopDongFetchedAt &&
     now - account.hopDongFetchedAt.getTime() < minMs
@@ -36,6 +43,7 @@ export async function ensureHanoiHopDongSnapshot(
     fetchedAt,
   );
   await hanoiRepo.setHopDongFetchedAt(accountId, fetchedAt);
+  await hanoiRepo.rebuildKnownMaKhachHang(accountId).catch(() => undefined);
 
   logger.debug(
     `[hanoi-hop-dong] Đã lưu ${inserted} hợp đồng — account=${account.username} API_rows=${rows.length} skippedNoMa=${skippedNoMa}`,

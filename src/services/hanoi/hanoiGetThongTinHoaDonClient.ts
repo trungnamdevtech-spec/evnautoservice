@@ -1,10 +1,28 @@
 import { env } from "../../config/env.js";
 import type { HanoiDmThongTinHoaDonItem, HanoiGetThongTinHoaDonResponse } from "../../types/hanoiGetThongTinHoaDon.js";
+import { buildHanoiApiAuthHeaders } from "./hanoiApiHeaders.js";
 
-const DEFAULT_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
-
-const TRACUU_REFERER_PATH = "/dashboard/home/quan-ly-hoa-don/tra-cuu-hoa-don";
+/**
+ * GET Tra cứu thông tin hóa đơn theo `(maDvql, maKh, tháng, năm, ky)`.
+ *
+ * **Nghiệp vụ:** Response `data.dmThongTinHoaDonList` cho biết trong tháng đó có **các kỳ** nào (thường 1–3 dòng,
+ * mỗi dòng một `ky` và một `idHdon`). Cùng một `idHdon`, pipeline tải PDF **TD** (thông báo tiền điện) và **GTGT**
+ * (nếu bật `HANOI_DOWNLOAD_PAYMENT_PDF`) qua `XemHoaDonByMaKhachHang`.
+ *
+ * Query `ky` trên URL là tham số bắt buộc của API; worker có thể gọi **lần lượt** `ky=1,2,3` rồi gộp + khử trùng
+ * `idHdon`, rồi lọc `filterHanoiThongTinRowsForMonth` để xử lý **mọi kỳ** trong tháng (phục vụ truy vấn).
+ *
+ * Hợp đồng HTTP:
+ * ```
+ * GET {EVN_HANOI_BASE_URL}/api/TraCuu/GetThongTinHoaDon
+ *   ?maDvql=<MA_DVIQLY>&maKh=<MA_KHACH_HANG>&thang=<1-12>&nam=<YYYY>&ky=<1|2|3>
+ * Headers: Authorization: Bearer <access_token>
+ *         Referer: {EVN_HANOI_BASE_URL}/dashboard/home/quan-ly-hoa-don/tra-cuu-hoa-don
+ *         Accept: application/json
+ *         + sec-ch-ua*, User-Agent (xem `hanoiApiHeaders.ts`)
+ * ```
+ */
+export const HANOI_GET_THONG_TIN_HOA_DON_REFERER_PATH = "/dashboard/home/quan-ly-hoa-don/tra-cuu-hoa-don";
 
 export interface HanoiGetThongTinHoaDonQuery {
   maDvql: string;
@@ -12,6 +30,7 @@ export interface HanoiGetThongTinHoaDonQuery {
   maKh: string;
   thang: number;
   nam: number;
+  /** Tham số URL (1–3). Một số bản triển khai API trả nhiều kỳ trong list dù chỉ gọi một `ky`. */
   ky: number;
 }
 
@@ -35,7 +54,7 @@ function shouldRetryHttp(status: number): boolean {
 }
 
 /**
- * Lọc đúng kỳ/tháng/năm yêu cầu (API có thể trả nhiều kỳ trong cùng tháng).
+ * Giữ các dòng khớp **đúng** `(ky, thang, nam)` — dùng sau khi gộp response hoặc khi API trả nhiều kỳ trong tháng.
  */
 export function filterHanoiThongTinRowsForPeriod(
   rows: HanoiDmThongTinHoaDonItem[],
@@ -46,13 +65,74 @@ export function filterHanoiThongTinRowsForPeriod(
   );
 }
 
-/** Các giá trị ky khác nhau xuất hiện trong danh sách (cùng tháng/năm). */
+/**
+ * Giữ mọi dòng khớp `(thang, nam)` và `ky` ∈ {1,2,3} — dùng khi quét **cả tháng** (mọi kỳ), không lọc một `ky` task.
+ */
+export function filterHanoiThongTinRowsForMonth(
+  rows: HanoiDmThongTinHoaDonItem[],
+  requested: { thang: number; nam: number },
+): HanoiDmThongTinHoaDonItem[] {
+  return rows.filter(
+    (r) =>
+      r.thang === requested.thang &&
+      r.nam === requested.nam &&
+      Number.isFinite(r.ky) &&
+      r.ky >= 1 &&
+      r.ky <= 3,
+  );
+}
+
+/**
+ * Khử trùng theo `idHdon` (giữ dòng đầu) — sau khi gộp nhiều lần GET theo `ky` URL.
+ */
+export function dedupeHanoiDmThongTinByIdHdon(rows: HanoiDmThongTinHoaDonItem[]): HanoiDmThongTinHoaDonItem[] {
+  const seen = new Set<number>();
+  const out: HanoiDmThongTinHoaDonItem[] = [];
+  for (const r of rows) {
+    if (seen.has(r.idHdon)) continue;
+    seen.add(r.idHdon);
+    out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Các giá trị `ky` khác nhau trong list (cùng tháng/năm) — **đếm `.length`** để biết tháng đó API trả bao nhiêu kỳ
+ * (tối đa 3). Khác với `filterHanoiThongTinRowsForPeriod` (chọn đúng một kỳ task).
+ */
 export function distinctKyInRows(rows: HanoiDmThongTinHoaDonItem[]): number[] {
   const s = new Set<number>();
   for (const r of rows) {
     if (Number.isFinite(r.ky)) s.add(r.ky);
   }
   return [...s].sort((a, b) => a - b);
+}
+
+/** Kiểm tra envelope JSON sau GET GetThongTinHoaDon (`data.dmThongTinHoaDonList`). */
+export interface HanoiGetThongTinHoaDonValidationResult {
+  ok: boolean;
+  reasons: string[];
+  listLength: number;
+}
+
+export function validateHanoiGetThongTinHoaDonResponse(
+  parsed: HanoiGetThongTinHoaDonResponse,
+): HanoiGetThongTinHoaDonValidationResult {
+  const reasons: string[] = [];
+  if (parsed.isError === true) {
+    reasons.push(`isError: ${String(parsed.message ?? "")}`);
+  }
+  const data = parsed.data;
+  let listLength = 0;
+  if (data != null && typeof data === "object") {
+    const list = data.dmThongTinHoaDonList;
+    if (list !== undefined && !Array.isArray(list)) {
+      reasons.push("data.dmThongTinHoaDonList không phải mảng");
+    } else if (Array.isArray(list)) {
+      listLength = list.length;
+    }
+  }
+  return { ok: reasons.length === 0, reasons, listLength };
 }
 
 /**
@@ -64,7 +144,7 @@ export async function fetchHanoiGetThongTinHoaDon(
 ): Promise<HanoiGetThongTinHoaDonResponse> {
   const url = buildTraCuuUrl(query);
   const base = env.evnHanoiBaseUrl.replace(/\/$/, "");
-  const referer = `${base}${TRACUU_REFERER_PATH}`;
+  const referer = `${base}${HANOI_GET_THONG_TIN_HOA_DON_REFERER_PATH}`;
 
   const maxRetries = env.hanoiTraCuuMaxRetries;
   const delayMs = env.hanoiTraCuuRetryDelayMs;
@@ -76,12 +156,7 @@ export async function fetchHanoiGetThongTinHoaDon(
     try {
       const res = await fetch(url, {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
-          Referer: referer,
-          "User-Agent": DEFAULT_UA,
-        },
+        headers: buildHanoiApiAuthHeaders(accessToken, referer),
         signal: AbortSignal.timeout(timeoutMs),
       });
 
@@ -125,4 +200,38 @@ export async function fetchHanoiGetThongTinHoaDon(
   }
 
   throw lastErr ?? new Error("HANOI GetThongTinHoaDon: retry exhausted");
+}
+
+/**
+ * Giống `fetchHanoiGetThongTinHoaDon` nhưng **không** throw khi `isError: true` (chỉ throw HTTP lỗi / JSON hỏng).
+ * Dùng khi cần đọc `message` nghiệp vụ hoặc script chẩn đoán.
+ */
+export async function fetchHanoiGetThongTinHoaDonIncludingBusinessError(
+  accessToken: string,
+  query: HanoiGetThongTinHoaDonQuery,
+): Promise<HanoiGetThongTinHoaDonResponse> {
+  const url = buildTraCuuUrl(query);
+  const base = env.evnHanoiBaseUrl.replace(/\/$/, "");
+  const referer = `${base}${HANOI_GET_THONG_TIN_HOA_DON_REFERER_PATH}`;
+  const timeoutMs = Math.max(5_000, env.hanoiTraCuuGetThongTinTimeoutMs);
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: buildHanoiApiAuthHeaders(accessToken, referer),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(`HANOI GetThongTinHoaDon HTTP ${res.status} — ${text.slice(0, 400)}`);
+  }
+
+  let parsed: HanoiGetThongTinHoaDonResponse;
+  try {
+    parsed = JSON.parse(text) as HanoiGetThongTinHoaDonResponse;
+  } catch {
+    throw new Error("HANOI GetThongTinHoaDon: phản hồi không phải JSON");
+  }
+
+  return parsed;
 }

@@ -6,7 +6,7 @@ import { HanoiAccountRepository } from "../../db/hanoiAccountRepository.js";
 import { decryptHanoiPassword } from "../../services/crypto/hanoiCredentials.js";
 import {
   dismissHanoiOverlayIfPresent,
-  isHanoiLoggedIn,
+  isOnHanoiLoginPage,
   loginHanoiInteractive,
 } from "./hanoiLogin.js";
 import { isHanoiLoginWrongCredentialsError } from "./hanoiLoginErrors.js";
@@ -22,15 +22,18 @@ import { ensureHanoiUserInfo } from "../../services/hanoi/hanoiUserInfoClient.js
 import { ensureHanoiHopDongSnapshot } from "../../services/hanoi/hanoiHopDongSync.js";
 import { HanoiContractRepository } from "../../db/hanoiContractRepository.js";
 import {
+  dedupeHanoiDmThongTinByIdHdon,
   distinctKyInRows,
   fetchHanoiGetThongTinHoaDon,
-  filterHanoiThongTinRowsForPeriod,
+  filterHanoiThongTinRowsForMonth,
 } from "../../services/hanoi/hanoiGetThongTinHoaDonClient.js";
 import type { ObjectId } from "mongodb";
 import type { HanoiAccount } from "../../types/hanoiAccount.js";
 import type { HanoiUserInfoSnapshot } from "../../types/hanoiUserInfo.js";
 import type { HanoiDmThongTinHoaDonItem } from "../../types/hanoiGetThongTinHoaDon.js";
+import type { HanoiContract } from "../../types/hanoiHopDong.js";
 import { ElectricityBillRepository } from "../../db/electricityBillRepository.js";
+import { effectiveMaKhachHangForBills } from "../../services/hanoi/hanoiResolveAccount.js";
 import { parseElectricityBillPdf } from "../../services/pdf/ElectricityBillParser.js";
 import { fetchHanoiXemHoaDonPdf } from "../../services/hanoi/hanoiXemHoaDonPdfClient.js";
 import { saveHanoiInvoicePdf } from "../../services/hanoi/saveHanoiInvoicePdf.js";
@@ -40,6 +43,22 @@ function parseVnSlashDate(s: string): Date {
   const m = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (!m) return new Date();
   return new Date(`${m[3]}-${m[2]!.padStart(2, "0")}-${m[1]!.padStart(2, "0")}T12:00:00.000Z`);
+}
+
+/** `ky` trên dòng API → 1|2|3 (parse lỗi → 1). */
+function hanoiKyFromRow(row: HanoiDmThongTinHoaDonItem): 1 | 2 | 3 {
+  const k = Number(row.ky);
+  if (k === 1 || k === 2 || k === 3) return k;
+  return 1;
+}
+
+/** Kỳ trong tháng từ payload task (`period` hoặc `ky`) — thiếu = quét cả 3 kỳ URL. */
+function parseRequestedPeriodKyFromPayload(payload: Record<string, unknown>): 1 | 2 | 3 | null {
+  const raw = payload.period ?? payload.ky;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const n = Number.parseInt(String(raw).trim(), 10);
+  if (n === 1 || n === 2 || n === 3) return n;
+  return null;
 }
 
 export class EVNHanoiWorker extends BaseWorker {
@@ -124,7 +143,8 @@ export class EVNHanoiWorker extends BaseWorker {
     trace("HANOI_ACCOUNT", account.username);
 
     await this.runStep("hanoi:probeSession", step, async () => {
-      await page.goto(env.evnHanoiBaseUrl, { waitUntil: "domcontentloaded", timeout: step });
+      // Mở thẳng trang đăng nhập — không dừng ở trang chủ rồi nhầm là đã đăng nhập
+      await page.goto(env.evnHanoiLoginUrl, { waitUntil: "domcontentloaded", timeout: step });
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => undefined);
       await new Promise<void>((r) => setTimeout(r, 500));
     });
@@ -133,7 +153,8 @@ export class EVNHanoiWorker extends BaseWorker {
       await dismissHanoiOverlayIfPresent(page, step);
     });
 
-    let loggedIn = await isHanoiLoggedIn(page);
+    // Còn ở URL /user/login → chưa có session; redirect ra khỏi login (đã cookie) → bỏ qua form
+    let loggedIn = !(await isOnHanoiLoginPage(page));
 
     if (!loggedIn) {
       trace("HANOI_LOGIN", "phiên hết hạn hoặc chưa có — đăng nhập mới (Playwright)");
@@ -155,8 +176,7 @@ export class EVNHanoiWorker extends BaseWorker {
         }
         throw err;
       }
-      loggedIn = await isHanoiLoggedIn(page);
-      if (!loggedIn) {
+      if (await isOnHanoiLoginPage(page)) {
         throw new Error("Đăng nhập Hanoi: vẫn ở màn đăng nhập sau khi submit — kiểm tra credentials.");
       }
     } else {
@@ -237,7 +257,33 @@ export class EVNHanoiWorker extends BaseWorker {
   }
 
   /**
-   * Một dòng Tra cứu — tải PDF tiền điện (TD) + tuỳ chọn GTGT (HANOI_DOWNLOAD_PAYMENT_PDF), parse và upsert DB.
+   * Cặp `(maDvql, maKh)` cho GET GetThongTinHoaDon — lấy từ `hanoi_contracts` (API hợp đồng: `maDonViQuanLy` + `maKhachHang`).
+   * Fallback: một cặp từ userinfo nếu chưa có hợp đồng trong DB.
+   */
+  private collectHanoiTraCuuPairsFromContracts(
+    contracts: HanoiContract[],
+    userInfo: HanoiUserInfoSnapshot | undefined,
+  ): Array<{ maDvql: string; maKh: string }> {
+    const map = new Map<string, { maDvql: string; maKh: string }>();
+    for (const c of contracts) {
+      const dv = (c.normalized.maDvql ?? String(c.raw["maDonViQuanLy"] ?? "")).trim();
+      const kh = c.maKhachHang?.trim().toUpperCase();
+      if (!dv || !kh) continue;
+      map.set(`${dv}|${kh}`, { maDvql: dv, maKh: kh });
+    }
+    if (map.size === 0 && userInfo?.maDvql?.trim() && userInfo.maKhachHang?.trim()) {
+      const dv = userInfo.maDvql.trim();
+      const kh = userInfo.maKhachHang.trim().toUpperCase();
+      map.set(`${dv}|${kh}`, { maDvql: dv, maKh: kh });
+    }
+    return [...map.values()].sort(
+      (a, b) => a.maDvql.localeCompare(b.maDvql, "vi") || a.maKh.localeCompare(b.maKh, "vi"),
+    );
+  }
+
+  /**
+   * Một dòng Tra cứu — GET XemHoaDon trả **một PDF** (base64) chứa cả thông báo tiền điện và GTGT; lưu một file,
+   * parse hai lần (`tien_dien` / `gtgt`) trên cùng `pdfPath` nếu bật HANOI_DOWNLOAD_PAYMENT_PDF.
    */
   private async hanoiDownloadAndParsePdfsForRow(
     traceTaskId: string,
@@ -254,6 +300,8 @@ export class EVNHanoiWorker extends BaseWorker {
     gtgt?: { pdfPath?: string; bytes?: number; parseOk?: boolean; parseError?: string; skipped?: boolean; skipReason?: string };
   }> {
     const trace = (phase: string, detail?: string) => logTaskPhase(traceTaskId, phase, detail);
+    const maDvqlPdf = (row.maDonViQuanLy ?? maDvql).trim();
+    const maKhPdf = (row.maKhang ?? maKh).trim();
     const idHdonStr = String(row.idHdon);
     const loaiTd = (row.loaiHdon || env.hanoiPdfLoaiTienDien).trim() || "TD";
 
@@ -265,35 +313,40 @@ export class EVNHanoiWorker extends BaseWorker {
     };
 
     await hanoiHumanPause(env);
-    trace("HANOI_PDF_TD", `XemHoaDon loai=${loaiTd} idHdon=${idHdonStr}`);
-    const bufTd = await fetchHanoiXemHoaDonPdf(bearerToken, {
-      maDvql,
-      maKh,
+    trace(
+      "HANOI_PDF",
+      `XemHoaDon loai=${loaiTd} idHdon=${idHdonStr} — một PDF (TB tiền điện + GTGT trong cùng file)`,
+    );
+    const buf = await fetchHanoiXemHoaDonPdf(bearerToken, {
+      maDvql: maDvqlPdf,
+      maKh: maKhPdf,
       idHoaDon: row.idHdon,
       loaiHoaDon: loaiTd,
     });
-    const pdfTd = await saveHanoiInvoicePdf(
-      bufTd,
-      maKh.toUpperCase(),
+
+    const pdfPath = await saveHanoiInvoicePdf(
+      buf,
+      maKhPdf.toUpperCase(),
       year,
       month,
       period,
       row.idHdon,
-      "tien_dien",
+      "xem_hoa_don",
     );
+
     const invTd = hanoiInvoiceIdSurrogateFromIdHdon(idHdonStr, "tien_dien");
     const prTd = await parseElectricityBillPdf(
-      pdfTd,
+      pdfPath,
       invTd,
-      maKh.toUpperCase(),
-      maDvql,
+      maKhPdf.toUpperCase(),
+      maDvqlPdf,
       meta,
       { hanoi: { idHdon: idHdonStr, kyTrongKy, pdfKind: "tien_dien" } },
     );
     if (prTd.success && prTd.bill) {
       await this.billRepo.upsert(prTd.bill);
     } else {
-      await this.billRepo.markHanoiError(idHdonStr, invTd, pdfTd, prTd.error ?? "parse failed", "tien_dien");
+      await this.billRepo.markHanoiError(idHdonStr, invTd, pdfPath, prTd.error ?? "parse failed", "tien_dien");
     }
 
     const resultado: {
@@ -301,8 +354,8 @@ export class EVNHanoiWorker extends BaseWorker {
       gtgt?: { pdfPath?: string; bytes?: number; parseOk?: boolean; parseError?: string; skipped?: boolean; skipReason?: string };
     } = {
       tienDien: {
-        pdfPath: pdfTd,
-        bytes: bufTd.length,
+        pdfPath: pdfPath,
+        bytes: buf.length,
         parseOk: Boolean(prTd.success),
         parseError: prTd.success ? undefined : prTd.error,
       },
@@ -313,48 +366,31 @@ export class EVNHanoiWorker extends BaseWorker {
       return resultado;
     }
 
-    const loaiGtgt = env.hanoiPdfLoaiGtgt.trim() || "GTGT";
-    await hanoiHumanPause(env);
-    trace("HANOI_PDF_GTGT", `XemHoaDon loai=${loaiGtgt} idHdon=${idHdonStr}`);
+    trace("HANOI_PDF_GTGT", `parse GTGT trên cùng file idHdon=${idHdonStr}`);
     try {
-      const bufGt = await fetchHanoiXemHoaDonPdf(bearerToken, {
-        maDvql,
-        maKh,
-        idHoaDon: row.idHdon,
-        loaiHoaDon: loaiGtgt,
-      });
-      const pdfGt = await saveHanoiInvoicePdf(
-        bufGt,
-        maKh.toUpperCase(),
-        year,
-        month,
-        period,
-        row.idHdon,
-        "gtgt",
-      );
       const invGt = hanoiInvoiceIdSurrogateFromIdHdon(idHdonStr, "gtgt");
       const prGt = await parseElectricityBillPdf(
-        pdfGt,
+        pdfPath,
         invGt,
-        maKh.toUpperCase(),
-        maDvql,
+        maKhPdf.toUpperCase(),
+        maDvqlPdf,
         meta,
         { hanoi: { idHdon: idHdonStr, kyTrongKy, pdfKind: "gtgt" } },
       );
       if (prGt.success && prGt.bill) {
         await this.billRepo.upsert(prGt.bill);
       } else {
-        await this.billRepo.markHanoiError(idHdonStr, invGt, pdfGt, prGt.error ?? "parse failed", "gtgt");
+        await this.billRepo.markHanoiError(idHdonStr, invGt, pdfPath, prGt.error ?? "parse failed", "gtgt");
       }
       resultado.gtgt = {
-        pdfPath: pdfGt,
-        bytes: bufGt.length,
+        pdfPath: pdfPath,
+        bytes: buf.length,
         parseOk: Boolean(prGt.success),
         parseError: prGt.success ? undefined : prGt.error,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      logger.warn(`[task ${traceTaskId}] Hanoi GTGT PDF bỏ qua — ${msg}`);
+      logger.warn(`[task ${traceTaskId}] Hanoi GTGT parse bỏ qua — ${msg}`);
       resultado.gtgt = { skipped: true, skipReason: msg };
     }
 
@@ -379,21 +415,24 @@ export class EVNHanoiWorker extends BaseWorker {
     if (task.payload.kind === "online_payment_link") {
       const rawMa =
         typeof task.payload.maKhachHang === "string" ? task.payload.maKhachHang.trim() : "";
-      const maKh = (rawMa || account.username).trim().toUpperCase();
+      const maKh = effectiveMaKhachHangForBills(rawMa || undefined, account);
       trace("HANOI_ONLINE_PAYMENT", `Tra cứu link thanh toán ma=${maKh}`);
       await hanoiHumanPause(env);
 
+      const maDViQLy = userInfo?.maDvql;
       let onlinePaymentLink: HanoiOnlinePaymentLinkResult;
       if ("page" in auth) {
         onlinePaymentLink = await fetchHanoiOnlinePaymentLink(maKh, step, {
           accessToken: bearerToken,
           page: auth.page,
+          maDViQLy,
         });
         const storage2 = await auth.page.context().storageState();
         await this.hanoiRepo.updateSession(accountId, JSON.stringify(storage2), new Date());
       } else {
         onlinePaymentLink = await fetchHanoiOnlinePaymentLink(maKh, step, {
           accessToken: bearerToken,
+          maDViQLy,
         });
       }
 
@@ -410,8 +449,6 @@ export class EVNHanoiWorker extends BaseWorker {
       };
     }
 
-    const periodStr = String(task.payload.period ?? task.payload.ky ?? "1");
-    const kyNum = Math.max(1, Math.min(3, Number.parseInt(periodStr, 10) || 1));
     const monthRaw = task.payload.month ?? task.payload.thang ?? String(new Date().getMonth() + 1);
     const monthNum = Number.parseInt(String(monthRaw), 10);
     if (!Number.isFinite(monthNum) || monthNum < 1 || monthNum > 12) {
@@ -428,37 +465,114 @@ export class EVNHanoiWorker extends BaseWorker {
 
     const month = String(monthNum).padStart(2, "0");
     const year = String(yearNum);
-    const period = String(kyNum);
 
-    trace("HANOI_PERIOD", `Kỳ ${period} tháng ${month} năm ${year}`);
+    const requestedPeriodKy = parseRequestedPeriodKyFromPayload(task.payload as Record<string, unknown>);
+    const kyUrlsToScan: readonly number[] =
+      requestedPeriodKy != null ? [requestedPeriodKy] : [1, 2, 3];
 
-    const maDvql = userInfo?.maDvql?.trim();
-    const maKh = userInfo?.maKhachHang?.trim();
-    if (!maDvql || !maKh) {
+    trace(
+      "HANOI_PERIOD",
+      requestedPeriodKy != null
+        ? `Tháng ${month}/${year} — chỉ kỳ ${requestedPeriodKy} (theo payload)`
+        : `Tháng ${month}/${year} — quét mọi kỳ (1–3) trong tháng`,
+    );
+
+    const contracts = await this.contractRepo.findByAccountId(accountId);
+    let traCuuPairs = this.collectHanoiTraCuuPairsFromContracts(contracts, userInfo);
+    if (traCuuPairs.length === 0) {
       throw new Error(
-        "Hanoi TraCuu: thiếu maDvql hoặc maKhachHang trong userinfo — kiểm tra GET /connect/userinfo.",
+        "Hanoi TraCuu: không có cặp (maDonViQuanLy, maKhachHang) — đồng bộ GetDanhSachHopDongByUserName hoặc kiểm tra GET /connect/userinfo.",
       );
     }
 
-    await hanoiHumanPause(env);
-    trace("HANOI_TRACUU", "GET /api/TraCuu/GetThongTinHoaDon");
+    const requestedMaKh =
+      typeof task.payload.maKhachHang === "string" ? task.payload.maKhachHang.trim().toUpperCase() : "";
+    if (requestedMaKh) {
+      const before = traCuuPairs.length;
+      traCuuPairs = traCuuPairs.filter((p) => p.maKh === requestedMaKh);
+      if (traCuuPairs.length === 0) {
+        throw new Error(
+          `Hanoi TraCuu: mã khách hàng ${requestedMaKh} không có trong hợp đồng/userinfo của tài khoản (có ${before} mã khác).`,
+        );
+      }
+      trace(
+        "HANOI_TRACUU_FILTER",
+        `Lọc theo payload.maKhachHang=${requestedMaKh} → ${traCuuPairs.length} cặp (trước đó ${before})`,
+      );
+    }
 
-    const traCuuResp = await fetchHanoiGetThongTinHoaDon(bearerToken, {
-      maDvql,
-      maKh,
-      thang: monthNum,
-      nam: yearNum,
-      ky: kyNum,
-    });
+    trace(
+      "HANOI_TRACUU",
+      `GET GetThongTinHoaDon — ${traCuuPairs.length} cặp (maDvql,maKh) từ hợp đồng / userinfo`,
+    );
 
-    const allRows = traCuuResp.data?.dmThongTinHoaDonList ?? [];
-    const requested = { ky: kyNum, thang: monthNum, nam: yearNum };
-    const matchedRows = filterHanoiThongTinRowsForPeriod(allRows, requested);
+    const requestedMonth = { thang: monthNum, nam: yearNum };
+    const traCuuByPair: Array<{
+      maDvql: string;
+      maKh: string;
+      kyCalls: Array<{ kyUrl: number; responseCode: number | null; rowCount: number; error?: string }>;
+      mergedRowCount: number;
+    }> = [];
+    const allRows: HanoiDmThongTinHoaDonItem[] = [];
+
+    for (let i = 0; i < traCuuPairs.length; i++) {
+      const { maDvql: md, maKh: mk } = traCuuPairs[i]!;
+      await hanoiHumanPause(env);
+      const mergedFromPair: HanoiDmThongTinHoaDonItem[] = [];
+      const kyCalls: Array<{ kyUrl: number; responseCode: number | null; rowCount: number; error?: string }> = [];
+      for (const kyUrl of kyUrlsToScan) {
+        if (kyUrl > 1) await hanoiHumanPause(env);
+        try {
+          const traCuuResp = await fetchHanoiGetThongTinHoaDon(bearerToken, {
+            maDvql: md,
+            maKh: mk,
+            thang: monthNum,
+            nam: yearNum,
+            ky: kyUrl,
+          });
+          const list = traCuuResp.data?.dmThongTinHoaDonList ?? [];
+          mergedFromPair.push(...list);
+          kyCalls.push({
+            kyUrl,
+            responseCode: traCuuResp.code ?? null,
+            rowCount: list.length,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.warn(`[task ${traceTaskId}] GetThongTinHoaDon maDvql=${md} maKh=${mk} ky=${kyUrl} — ${msg}`);
+          kyCalls.push({ kyUrl, responseCode: null, rowCount: 0, error: msg.slice(0, 500) });
+        }
+      }
+      const forMonth = dedupeHanoiDmThongTinByIdHdon(
+        filterHanoiThongTinRowsForMonth(mergedFromPair, requestedMonth),
+      );
+      allRows.push(...forMonth);
+      traCuuByPair.push({
+        maDvql: md,
+        maKh: mk,
+        kyCalls,
+        mergedRowCount: forMonth.length,
+      });
+    }
+
+    const monthRows = dedupeHanoiDmThongTinByIdHdon(
+      filterHanoiThongTinRowsForMonth(allRows, requestedMonth),
+    );
+    const rowsForPdf =
+      requestedPeriodKy != null
+        ? monthRows.filter((r) => hanoiKyFromRow(r) === requestedPeriodKy)
+        : monthRows;
+    if (requestedPeriodKy != null && monthRows.length > 0 && rowsForPdf.length === 0) {
+      trace(
+        "HANOI_KY_FILTER",
+        `Không có dòng kỳ ${requestedPeriodKy} trong tháng (có ${monthRows.length} dòng kỳ khác).`,
+      );
+    }
     const kysInResponse = distinctKyInRows(allRows);
 
     const downloadedAt = new Date().toISOString();
 
-    if (matchedRows.length === 0) {
+    if (rowsForPdf.length === 0) {
       return {
         downloadedAt,
         lookupPayload: {
@@ -467,43 +581,47 @@ export class EVNHanoiWorker extends BaseWorker {
           username: account.username,
           authMode: "page" in auth ? "browser" : "api",
           ...(userInfo !== undefined ? { userInfo } : {}),
-          period,
           month,
           year,
+          requestedPeriodKy: requestedPeriodKy ?? null,
+          scanAllKyInMonth: requestedPeriodKy == null,
           hanoiTraCuu: {
-            requested: requested,
-            responseCode: traCuuResp.code ?? null,
+            requestedMonth,
+            traCuuPairs: traCuuByPair,
+            contractPairCount: traCuuPairs.length,
             rows: allRows,
             rowCount: allRows.length,
             distinctKyInMonth: kysInResponse,
             matchedCount: 0,
-            matchedForRequestedKy: [],
+            matchedRowsInMonth: [],
             idHdonList: [],
           },
           note:
-            "GetThongTinHoaDon: không có dòng khớp ky/tháng/năm — không tải PDF.",
+            "GetThongTinHoaDon: không có dòng khớp tháng/năm (và kỳ yêu cầu nếu có) — không tải PDF.",
         },
       };
     }
 
-    const kyTrongKy = kyNum as 1 | 2 | 3;
+    const fbPair = traCuuPairs[0]!;
     let pdfAttempted = 0;
     let pdfSuccess = 0;
     let parseAttempted = 0;
     let parseSuccess = 0;
     const hanoiPdfDetails: Array<Record<string, unknown>> = [];
 
-    for (const row of matchedRows) {
+    for (const row of rowsForPdf) {
+      const kyTrongKy = hanoiKyFromRow(row);
+      const periodForFile = String(kyTrongKy);
       const batch = await this.hanoiDownloadAndParsePdfsForRow(
         traceTaskId,
         bearerToken,
-        maDvql,
-        maKh,
+        row.maDonViQuanLy?.trim() || fbPair.maDvql,
+        row.maKhang?.trim() || fbPair.maKh,
         row,
         kyTrongKy,
         year,
         month,
-        period,
+        periodForFile,
       );
       pdfAttempted += 1;
       pdfSuccess += 1;
@@ -550,21 +668,26 @@ export class EVNHanoiWorker extends BaseWorker {
         username: account.username,
         authMode: "page" in auth ? "browser" : "api",
         ...(userInfo !== undefined ? { userInfo } : {}),
-        period,
         month,
         year,
+        requestedPeriodKy: requestedPeriodKy ?? null,
+        scanAllKyInMonth: requestedPeriodKy == null,
         hanoiTraCuu: {
-          requested: requested,
-          responseCode: traCuuResp.code ?? null,
+          requestedMonth,
+          traCuuPairs: traCuuByPair,
+          contractPairCount: traCuuPairs.length,
           rows: allRows,
           rowCount: allRows.length,
           distinctKyInMonth: kysInResponse,
-          matchedCount: matchedRows.length,
-          matchedForRequestedKy: matchedRows,
-          idHdonList: matchedRows.map((r) => r.idHdon),
+          matchedCount: rowsForPdf.length,
+          matchedRowsInMonth: rowsForPdf,
+          idHdonList: rowsForPdf.map((r) => r.idHdon),
         },
         hanoiPdf: hanoiPdfDetails,
-        note: "Đã tải PDF (tiền điện + GTGT nếu bật HANOI_DOWNLOAD_PAYMENT_PDF), parse và upsert electricity_bills (provider=EVN_HANOI).",
+        note:
+          requestedPeriodKy != null
+            ? `Chỉ xử lý kỳ ${requestedPeriodKy} theo payload (mỗi idHdon: GET XemHoaDon → PDF, parse TD/GTGT nếu bật).`
+            : "Quét kỳ 1–3 trên URL; mỗi idHdon: GET XemHoaDon → PDF (TB+GTGT cùng file nếu bật HANOI_DOWNLOAD_PAYMENT_PDF).",
       },
     };
   }

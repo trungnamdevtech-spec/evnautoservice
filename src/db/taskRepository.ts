@@ -265,7 +265,7 @@ export class TaskRepository {
     return this.insertPendingEvn(old.payload);
   }
 
-  /** Task quét Hanoi — payload cần `hanoiAccountId` + kỳ/tháng/năm */
+  /** Task quét Hanoi — payload: `hanoiAccountId` + `period`/`ky` (1–3) + tháng/năm; worker chỉ xử lý đúng kỳ đó (không tải kỳ khác). */
   async insertPendingHanoi(payload: Record<string, unknown>): Promise<ObjectId> {
     const c = await this.col();
     const now = new Date();
@@ -295,7 +295,10 @@ export class TaskRepository {
     return res.insertedId;
   }
 
-  /** Tránh trùng job PENDING/RUNNING cùng tài khoản + kỳ Hanoi. */
+  /**
+   * Tránh trùng job PENDING/RUNNING cùng tài khoản + tháng/năm + **cùng kỳ** (`payload.period` / `payload.ky`).
+   * Hai task cùng tháng nhưng kỳ 1 vs kỳ 2 không coi trùng.
+   */
   async findActiveHanoiForPeriod(
     hanoiAccountIdHex: string,
     ky: string,
@@ -306,6 +309,7 @@ export class TaskRepository {
     return c.findOne({
       status: { $in: ["PENDING", "RUNNING"] },
       provider: "EVN_HANOI",
+      "payload.kind": { $ne: "online_payment_link" },
       $and: [
         {
           $or: [
@@ -315,9 +319,12 @@ export class TaskRepository {
         },
         {
           $or: [
-            { "payload.period": ky, "payload.month": thang, "payload.year": nam },
-            { "payload.ky": ky, "payload.thang": thang, "payload.nam": nam },
+            { $and: [{ "payload.month": thang }, { "payload.year": nam }] },
+            { $and: [{ "payload.thang": thang }, { "payload.nam": nam }] },
           ],
+        },
+        {
+          $or: [{ "payload.period": ky }, { "payload.ky": ky }],
         },
       ],
     });

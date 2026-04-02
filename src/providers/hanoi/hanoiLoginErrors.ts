@@ -23,7 +23,8 @@ export function detectHanoiLoginErrorKind(
 ): "wrong_password" | "locked" | "captcha" | null {
   if (!text || text.trim().length === 0) return null;
   const t = text.toLowerCase();
-  if (/captcha|mã xác nhận|mã hình|kiểm tra/i.test(t)) return "captcha";
+  // Không dùng từ "kiểm tra" đơn lẻ — thường gặp trong "vui lòng kiểm tra lại thông tin" (không phải captcha).
+  if (/captcha|mã xác nhận|mã hình|mã kiểm tra|xác minh người máy|robot/i.test(t)) return "captcha";
   if (/khóa|lock|vô hiệu|suspended|bị chặn/i.test(t)) return "locked";
   if (
     /mật khẩu|password|không đúng|không chính xác|sai|không hợp lệ|invalid|incorrect|failed/i.test(

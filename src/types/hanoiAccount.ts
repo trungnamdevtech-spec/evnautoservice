@@ -4,8 +4,13 @@ import type { HanoiUserInfoSnapshot } from "./hanoiUserInfo.js";
 /** Tài khoản đăng nhập CSKH EVN Hà Nội (mật khẩu lưu đã mã hóa). */
 export interface HanoiAccount {
   _id?: ObjectId;
-  /** Tên đăng nhập / mã khách hàng — duy nhất */
+  /** Tên đăng nhập CSKH (thường SĐT) — **không** nhất thiết trùng mã khách hàng tra cứu. */
   username: string;
+  /**
+   * Mã khách hàng (MA_KH) đã biết thuộc tài khoản này — từ GET userinfo + `hanoi_contracts` sau mỗi lần đồng bộ.
+   * Dùng để agent gửi `maKhachHang` → tìm đúng `hanoiAccountId` đăng nhập.
+   */
+  knownMaKhachHang?: string[];
   /** Chuỗi base64 AES-256-GCM (xem hanoiCredentials) */
   passwordEncrypted: string;
   enabled: boolean;

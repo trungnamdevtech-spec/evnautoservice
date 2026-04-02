@@ -65,4 +65,4 @@ main().catch((err) => {
     console.info("[test:wrong-captcha] ✓ Retry đủ 4 lần — logic hoạt động đúng.");
   }
   process.exit(0);
-});
+}); 

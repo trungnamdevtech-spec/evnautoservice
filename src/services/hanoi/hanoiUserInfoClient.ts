@@ -4,17 +4,18 @@ import { logger } from "../../core/logger.js";
 import type { HanoiAccountRepository } from "../../db/hanoiAccountRepository.js";
 import type { HanoiAccount } from "../../types/hanoiAccount.js";
 import type { HanoiUserInfoSnapshot } from "../../types/hanoiUserInfo.js";
+import { buildHanoiApiAuthHeaders } from "./hanoiApiHeaders.js";
 
 /**
  * GET /connect/userinfo — Bearer token.
  */
 export async function fetchHanoiUserInfo(accessToken: string): Promise<Record<string, unknown>> {
+  const referer = `${env.evnHanoiBaseUrl.replace(/\/$/, "")}/dashboard/home`;
   const res = await fetch(env.hanoiStsUserInfoUrl, {
     method: "GET",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      ...buildHanoiApiAuthHeaders(accessToken, referer),
       Accept: "application/json, text/plain, */*",
-      Referer: `${env.evnHanoiBaseUrl.replace(/\/$/, "")}/`,
     },
     signal: AbortSignal.timeout(env.hanoiUserInfoTimeoutMs),
   });
@@ -51,6 +52,11 @@ export function parseHanoiUserInfo(raw: Record<string, unknown>): HanoiUserInfoS
   };
 }
 
+export type EnsureHanoiUserInfoOptions = {
+  /** Bỏ qua HANOI_USERINFO_REFRESH_MIN_MS — dùng khi backfill / đồng bộ hàng loạt. */
+  forceRefresh?: boolean;
+};
+
 /**
  * Lấy và lưu userinfo khi cần (theo HANOI_USERINFO_REFRESH_MIN_MS).
  * Trả về snapshot mới nhất (để gắn vào metadata task).
@@ -60,11 +66,13 @@ export async function ensureHanoiUserInfo(
   accountId: ObjectId,
   accessToken: string,
   repo: HanoiAccountRepository,
+  options?: EnsureHanoiUserInfoOptions,
 ): Promise<HanoiUserInfoSnapshot> {
   const minMs = env.hanoiUserInfoRefreshMinMs;
   const now = Date.now();
   const ui = account.userInfo;
   if (
+    !options?.forceRefresh &&
     minMs > 0 &&
     ui?.maDvql &&
     ui?.maKhachHang &&

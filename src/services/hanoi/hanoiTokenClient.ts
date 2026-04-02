@@ -5,16 +5,21 @@ import { encryptHanoiPassword, decryptHanoiPassword } from "../crypto/hanoiCrede
 import type { HanoiAccountRepository } from "../../db/hanoiAccountRepository.js";
 import type { HanoiAccount } from "../../types/hanoiAccount.js";
 import { HanoiLoginWrongCredentialsError } from "../../providers/hanoi/hanoiLoginErrors.js";
+import { buildHanoiStsTokenHeaders } from "./hanoiApiHeaders.js";
 
 export interface HanoiPasswordTokenResponse {
   access_token: string;
   expires_in: number;
   token_type?: string;
+  scope?: string;
 }
 
 /**
  * Lấy access_token qua OAuth2 password grant — không cần trình duyệt.
- * @see https://apicskh.evnhanoi.vn/connect/token
+ *
+ * API: POST https://apicskh.evnhanoi.vn/connect/token
+ * Body: username, password, grant_type=password, client_id, client_secret
+ * Headers: browser-like (sec-ch-ua, User-Agent, Referer evnhanoi.vn)
  */
 export async function fetchHanoiPasswordToken(
   username: string,
@@ -30,10 +35,7 @@ export async function fetchHanoiPasswordToken(
 
   const res = await fetch(env.hanoiStsTokenUrl, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json, text/plain, */*",
-    },
+    headers: buildHanoiStsTokenHeaders(env.evnHanoiBaseUrl),
     body: body.toString(),
     signal: AbortSignal.timeout(env.hanoiStsTokenTimeoutMs),
   });
@@ -71,7 +73,12 @@ export async function fetchHanoiPasswordToken(
     throw new Error("HANOI_STS: thiếu access_token trong phản hồi");
   }
 
-  return { access_token, expires_in, token_type: typeof json.token_type === "string" ? json.token_type : undefined };
+  return {
+    access_token,
+    expires_in,
+    token_type: typeof json.token_type === "string" ? json.token_type : undefined,
+    scope: typeof json.scope === "string" ? json.scope : undefined,
+  };
 }
 
 /**

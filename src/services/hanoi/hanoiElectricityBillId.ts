@@ -1,6 +1,6 @@
 /**
  * Khóa và invoiceId surrogate cho `electricity_bills` — provider EVN_HANOI.
- * Tách hai PDF cùng idHdon (tiền điện vs GTGT) giống logic NPC thong_bao/thanh_toan.
+ * API chỉ trả **một file PDF** / idHdon; parse hai lần (TB vs GTGT) trên cùng đường dẫn — hai `billKey` khác nhau.
  */
 export type HanoiPdfKind = "tien_dien" | "gtgt";
 

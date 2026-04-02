@@ -44,6 +44,7 @@ export interface ScrapeTask {
   /**
    * CPC: period/ky, month/thang, year/nam.
    * NPC: thêm tuỳ chọn kyList | npcKyList | periods — mảng kỳ trong tháng (vd. [1,2,3]); mặc định một kỳ từ period/ky.
+   * EVN_HANOI: month/thang + year/nam — worker quét **mọi kỳ (1–3)** trong tháng; `period`/`ky` trong payload không giới hạn phạm vi quét (chỉ còn tương thích API/queue cũ).
    */
   payload: Record<string, unknown>;
   errorMessage?: string;

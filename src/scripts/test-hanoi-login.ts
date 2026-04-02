@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   const { runWithTimeout } = await import("../core/stepTimeout.js");
   const { AnticaptchaClient } = await import("../services/captcha/AnticaptchaClient.js");
   const { BaseWorker } = await import("../core/BaseWorker.js");
-  const { loginHanoiInteractive, isHanoiLoggedIn } = await import("../providers/hanoi/hanoiLogin.js");
+  const { loginHanoiInteractive, isOnHanoiLoginPage } = await import("../providers/hanoi/hanoiLogin.js");
 
   const runStep = <T>(name: string, timeoutMs: number, fn: () => Promise<T>): Promise<T> =>
     runWithTimeout(name, timeoutMs, fn);
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   try {
     await worker.testLogin(page);
 
-    if (!(await isHanoiLoggedIn(page))) {
+    if (await isOnHanoiLoginPage(page)) {
       throw new Error("loginHanoiInteractive kết thúc nhưng vẫn ở màn đăng nhập — kiểm tra session.");
     }
 

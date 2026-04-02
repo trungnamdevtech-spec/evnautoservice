@@ -72,6 +72,16 @@ export class ElectricityBillRepository {
         await c.createIndex({ hanThanhToan: 1 }, { background: true }).catch(() => undefined);
         // Query theo đơn vị điện lực
         await c.createIndex({ maDonViQuanLy: 1 }, { background: true }).catch(() => undefined);
+        // EVN_HANOI: truy vấn theo KH + tháng/năm (mọi kỳ) hoặc theo id hệ thống
+        await c
+          .createIndex(
+            { provider: 1, maKhachHang: 1, "kyBill.thang": 1, "kyBill.nam": 1 },
+            { background: true },
+          )
+          .catch(() => undefined);
+        await c
+          .createIndex({ provider: 1, hanoiIdHdon: 1 }, { sparse: true, background: true })
+          .catch(() => undefined);
         // Query trạng thái parse (pending / error để re-parse)
         await c.createIndex({ status: 1 }, { background: true }).catch(() => undefined);
         return c;
@@ -224,6 +234,15 @@ export class ElectricityBillRepository {
     });
   }
 
+  /** Một bản ghi theo `provider` + `invoiceId` — an toàn khi trùng số giữa miền (Hanoi surrogate vs CPC). */
+  async findByProviderInvoiceId(
+    provider: ElectricityProvider,
+    invoiceId: number,
+  ): Promise<ElectricityBill | null> {
+    const c = await this.col();
+    return c.findOne({ provider, invoiceId });
+  }
+
   /** Tra cứu theo `billKey` (CPC/NPC). */
   async findByBillKey(billKey: string): Promise<ElectricityBill | null> {
     const c = await this.col();
@@ -235,6 +254,64 @@ export class ElectricityBillRepository {
    * `thong_bao` (mặc định): PDF thông báo — XemChiTietHoaDon_NPC.
    * `thanh_toan`: PDF hóa đơn thanh toán — XemHoaDon_NPC.
    */
+  /**
+   * Hóa đơn EVN_HANOI đã parse: toàn bộ kỳ trong tháng/năm (0–3 bản ghi tiền điện, mỗi kỳ một `idHdon`;
+   * có thể thêm GTGT nếu đã tải — lọc `hanoiPdfKind` nếu cần).
+   */
+  async findHanoiParsedByCustomerMonth(
+    maKhachHang: string,
+    thang: number,
+    nam: number,
+  ): Promise<ElectricityBill[]> {
+    const c = await this.col();
+    return c
+      .find({
+        provider: "EVN_HANOI" as const,
+        maKhachHang: maKhachHang.toUpperCase(),
+        status: "parsed" as const,
+        "kyBill.thang": thang,
+        "kyBill.nam": nam,
+      })
+      .sort({ "kyBill.ky": 1, hanoiPdfKind: 1 })
+      .toArray();
+  }
+
+  /**
+   * Một bản EVN_HANOI đã parse đúng KH + kỳ/tháng/năm (API ensure-bill).
+   * Mặc định: PDF tiền điện (`tien_dien` hoặc bản cũ thiếu `hanoiPdfKind`).
+   */
+  async findHanoiParsedByCustomerPeriod(
+    maKhachHang: string,
+    ky: 1 | 2 | 3,
+    thang: number,
+    nam: number,
+    hanoiPdfKind: HanoiPdfKind | "any" = "tien_dien",
+  ): Promise<ElectricityBill | null> {
+    const c = await this.col();
+    const maUpper = maKhachHang.trim().toUpperCase();
+    const base = {
+      provider: "EVN_HANOI" as const,
+      maKhachHang: maUpper,
+      status: "parsed" as const,
+      "kyBill.ky": ky,
+      "kyBill.thang": thang,
+      "kyBill.nam": nam,
+    };
+    if (hanoiPdfKind === "any") {
+      return c.findOne(base, { sort: { parsedAt: -1, updatedAt: -1 } });
+    }
+    if (hanoiPdfKind === "tien_dien") {
+      return c.findOne(
+        {
+          ...base,
+          $or: [{ hanoiPdfKind: { $exists: false } }, { hanoiPdfKind: "tien_dien" }],
+        },
+        { sort: { parsedAt: -1, updatedAt: -1 } },
+      );
+    }
+    return c.findOne({ ...base, hanoiPdfKind: "gtgt" }, { sort: { parsedAt: -1, updatedAt: -1 } });
+  }
+
   async findByNpcIdHdon(idHdon: string, kind: NpcPdfKind = "thong_bao"): Promise<ElectricityBill | null> {
     const c = await this.col();
     if (kind === "thanh_toan") {
