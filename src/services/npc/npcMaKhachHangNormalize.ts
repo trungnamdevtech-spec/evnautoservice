@@ -21,11 +21,20 @@ const NPC_MA_KH_CORE = /\b(PA[A-Z0-9]{6,})\b/gi;
 /** Số định danh dạng xxx.xxx.xxx — không phải MA_KH PA (thường gửi nhầm). */
 const DOTTED_NUMBER_ONLY = /^\d{1,3}(\.\d{3}){1,5}$/;
 
-function normalizeUnicodeWhitespace(input: string): string {
+/**
+ * Gộp mọi khoảng trắng (space thường, NBSP, zero-width, ideographic space U+3000, …) rồi trim.
+ * Dùng trước khi tra `npc_accounts` hoặc parse mã PA.
+ */
+export function normalizeNpcFieldWhitespace(input: string): string {
   let s = input.replace(/\u00A0/g, " ");
   s = s.replace(/[\u2000-\u200B\uFEFF]/g, "");
+  s = s.replace(/\u3000/g, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s;
+}
+
+function normalizeUnicodeWhitespace(input: string): string {
+  return normalizeNpcFieldWhitespace(input);
 }
 
 /**
@@ -82,4 +91,16 @@ export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResul
   }
 
   return { ok: true, ma: codes[0]! };
+}
+
+/**
+ * Chuẩn hóa username / MA_KH để tra DB (`findByUsername`, ensure-bill, query GET).
+ * Trích một mã PA hợp lệ nếu có; không thì uppercase chuỗi đã bỏ khoảng trắng thừa.
+ */
+export function normalizeNpcUsernameForLookup(raw: string): string {
+  const s = normalizeNpcFieldWhitespace(raw);
+  if (!s) return "";
+  const pa = normalizeNpcMaKhachHangInput(s);
+  if (pa.ok) return pa.ma;
+  return s.toUpperCase();
 }

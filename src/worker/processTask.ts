@@ -18,7 +18,10 @@ import { parseElectricityBillPdf } from "../services/pdf/ElectricityBillParser.j
 import { logTaskPhase, logger } from "../core/logger.js";
 import { decryptNpcPassword } from "../services/crypto/npcCredentials.js";
 import { fetchNpcOnlinePaymentLink } from "../services/npc/npcOnlinePaymentLink.js";
-import { normalizeNpcMaKhachHangInput } from "../services/npc/npcMaKhachHangNormalize.js";
+import {
+  normalizeNpcFieldWhitespace,
+  normalizeNpcMaKhachHangInput,
+} from "../services/npc/npcMaKhachHangNormalize.js";
 import { fireAgentTaskWebhook } from "../services/webhook/agentTaskWebhook.js";
 
 function formatError(err: unknown): string {
@@ -183,7 +186,7 @@ export async function processNpcTask(
       await npcWorker.prepareNpcIndexNpcSession(page, account, accId, password, taskHex, step);
       const rawMa =
         typeof task.payload.maKhachHang === "string" ? task.payload.maKhachHang : "";
-      const rawTrim = rawMa.replace(/\u00A0/g, " ").replace(/[\u2000-\u200B\uFEFF]/g, "").trim();
+      const rawTrim = normalizeNpcFieldWhitespace(rawMa);
       const resolvedMa = rawTrim !== "" ? rawMa : account.username;
       const maNorm = normalizeNpcMaKhachHangInput(resolvedMa);
       if (!maNorm.ok) {

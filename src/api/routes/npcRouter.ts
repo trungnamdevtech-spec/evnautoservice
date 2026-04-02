@@ -13,7 +13,11 @@ import { decryptNpcPassword } from "../../services/crypto/npcCredentials.js";
 import { AnticaptchaClient } from "../../services/captcha/AnticaptchaClient.js";
 import { EVNNPCWorker } from "../../providers/npc/EVNNPCWorker.js";
 import { runNpcOnlinePaymentLinkWithPlaywright } from "../../services/npc/npcOnlinePaymentLinkSession.js";
-import { normalizeNpcMaKhachHangInput } from "../../services/npc/npcMaKhachHangNormalize.js";
+import {
+  normalizeNpcFieldWhitespace,
+  normalizeNpcMaKhachHangInput,
+  normalizeNpcUsernameForLookup,
+} from "../../services/npc/npcMaKhachHangNormalize.js";
 
 const npcRepo = new NpcAccountRepository();
 
@@ -217,8 +221,9 @@ npcRouter.post("/accounts/replace-bulk", async (c) => {
  * - Không có query đó: phân trang `enabledOnly` / `limit` / `skip` như cũ.
  */
 npcRouter.get("/accounts", async (c) => {
-  const lookup =
-    (c.req.query("username") ?? c.req.query("maKhachHang") ?? "").trim();
+  const lookup = normalizeNpcUsernameForLookup(
+    c.req.query("username") ?? c.req.query("maKhachHang") ?? "",
+  );
   if (lookup) {
     const acc = await npcRepo.findByUsername(lookup);
     if (!acc) {
@@ -303,7 +308,9 @@ npcRouter.post("/online-payment-link", async (c) => {
   }
   const idHexRaw = typeof body.npcAccountId === "string" ? body.npcAccountId.trim() : "";
   const npcAccountUsername =
-    typeof body.npcAccountUsername === "string" ? body.npcAccountUsername.trim() : "";
+    typeof body.npcAccountUsername === "string"
+      ? normalizeNpcUsernameForLookup(body.npcAccountUsername)
+      : "";
 
   if (idHexRaw && npcAccountUsername) {
     return c.json(
@@ -330,10 +337,7 @@ npcRouter.post("/online-payment-link", async (c) => {
       : typeof body.username === "string"
         ? body.username
         : "";
-  const maKhOptTrimmed = maKhOptRaw
-    .replace(/\u00A0/g, " ")
-    .replace(/[\u2000-\u200B\uFEFF]/g, "")
-    .trim();
+  const maKhOptTrimmed = normalizeNpcFieldWhitespace(maKhOptRaw);
 
   const secret = env.npcCredentialsSecret.trim();
   if (!secret) {
@@ -492,9 +496,9 @@ npcRouter.post("/ensure-bill", async (c) => {
 
   const usernameRaw =
     typeof body.username === "string"
-      ? body.username.trim()
+      ? normalizeNpcUsernameForLookup(body.username)
       : typeof body.maKhachHang === "string"
-        ? body.maKhachHang.trim()
+        ? normalizeNpcUsernameForLookup(body.maKhachHang)
         : "";
   if (!usernameRaw) {
     return c.json(
@@ -608,7 +612,7 @@ npcRouter.post("/ensure-bill", async (c) => {
 
 /** GET /api/npc/bills?maKhachHang=&limit=&npcPdfKind=all|thong_bao|thanh_toan — electricity_bills (EVN_NPC) */
 npcRouter.get("/bills", async (c) => {
-  const maKh = (c.req.query("maKhachHang") ?? c.req.query("maKH") ?? "").trim().toUpperCase();
+  const maKh = normalizeNpcUsernameForLookup(c.req.query("maKhachHang") ?? c.req.query("maKH") ?? "");
   if (!maKh) {
     return c.json({ error: "Query maKhachHang (mã khách hàng) là bắt buộc" }, 400);
   }

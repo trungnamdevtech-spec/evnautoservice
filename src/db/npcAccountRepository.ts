@@ -3,6 +3,7 @@ import { getMongoDb } from "./mongo.js";
 import type { NpcAccount } from "../types/npcAccount.js";
 import { encryptNpcPassword } from "../services/crypto/npcCredentials.js";
 import { env } from "../config/env.js";
+import { normalizeNpcUsernameForLookup } from "../services/npc/npcMaKhachHangNormalize.js";
 
 const COLLECTION = "npc_accounts";
 
@@ -38,7 +39,7 @@ export class NpcAccountRepository {
     const passwordEncrypted = encryptNpcPassword(input.passwordPlain, secret);
     const c = await this.col();
     const res = await c.insertOne({
-      username: input.username.trim(),
+      username: normalizeNpcUsernameForLookup(input.username),
       passwordEncrypted,
       enabled: true,
       label: input.label?.trim() || undefined,
@@ -58,7 +59,7 @@ export class NpcAccountRepository {
    * Khớp không phân biệt hoa thường.
    */
   async findByUsername(username: string): Promise<NpcAccount | null> {
-    const u = username.trim();
+    const u = normalizeNpcUsernameForLookup(username);
     if (!u) return null;
     const c = await this.col();
     const exact = await c.findOne({ username: u });
@@ -187,7 +188,7 @@ export class NpcAccountRepository {
     let skipped = 0;
     const errors: string[] = [];
     for (const row of rows) {
-      const username = row.username?.trim();
+      const username = row.username ? normalizeNpcUsernameForLookup(row.username) : "";
       if (!username) {
         errors.push("bỏ qua dòng thiếu username");
         continue;
