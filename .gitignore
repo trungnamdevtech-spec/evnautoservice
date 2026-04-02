@@ -38,6 +38,7 @@ test-results/
 # Tài liệu nội bộ — mặc định không track; ngoại lệ dưới đây đưa lên repo
 docs_autocheckenv/**
 !docs_autocheckenv/HANOI_AGENT_API.md
+!docs_autocheckenv/AGENT_GATEWAY_HANOI_NOTES.md
 !docs_autocheckenv/openapi.yaml
 TESTING.md
 

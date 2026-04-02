@@ -187,6 +187,18 @@ export const env = {
   /** `false`: tắt POST `/api/hanoi/online-payment-link`. */
   hanoiOnlinePaymentLinkApiEnabled: parseBoolSafe(process.env.HANOI_ONLINE_PAYMENT_LINK_API_ENABLED, true),
   /**
+   * POST `GetListThongTinNoKhachHang`: khi HTTP 200 nhưng list trống / thiếu URL — server EVN đôi khi trả tạm rỗng nếu gọi dày.
+   * Số lần **gọi lại thêm** sau lần đầu thất bại (mặc định 3 → tối đa 4 lần HTTP).
+   */
+  hanoiOnlinePaymentTracuuMaxRetries: Math.min(8, Math.max(0, parseIntSafe(process.env.HANOI_ONLINE_PAYMENT_TRACUU_MAX_RETRIES, 3))),
+  /** Cơ sở chờ giữa các lần retry khi list trống (ms). */
+  hanoiOnlinePaymentTracuuRetryDelayMs: Math.max(200, parseIntSafe(process.env.HANOI_ONLINE_PAYMENT_TRACUU_RETRY_DELAY_MS, 1500)),
+  /**
+   * Chờ trước lần đầu gọi `GetListThongTinNoKhachHang` (sau userinfo/hợp đồng) — trang EVN HN load chậm,
+   * gọi sớm dễ trả list rỗng; 0 = tắt.
+   */
+  hanoiOnlinePaymentTracuuPreDelayMs: Math.max(0, parseIntSafe(process.env.HANOI_ONLINE_PAYMENT_TRACUU_PRE_DELAY_MS, 2500)),
+  /**
    * `true`: cho phép POST `/api/hanoi/accounts/replace-bulk`.
    * Mặc định tắt — chỉ bật tạm khi vận hành.
    */

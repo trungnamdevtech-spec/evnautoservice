@@ -108,6 +108,21 @@ function extractDebtListVm(data: unknown): unknown {
   return undefined;
 }
 
+/** Gộp các biến thể JSON EVN: `data` là mảng, hoặc object có list*, hoặc list ở root. */
+function extractDebtListFromResponse(root: Record<string, unknown>): unknown {
+  const data = root.data;
+  if (Array.isArray(data)) return data;
+  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+    const fromVm = extractDebtListVm(data);
+    if (fromVm !== undefined) return fromVm;
+  }
+  return extractDebtListVm(root);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function pickUrlThanhToan(list: unknown): string | null {
   if (!Array.isArray(list) || list.length === 0) return null;
   const rows = list.filter((x): x is TracuuNoVm => x !== null && typeof x === "object");
@@ -120,9 +135,9 @@ function pickUrlThanhToan(list: unknown): string | null {
 }
 
 /**
- * POST `/api/TraCuu/GetListThongTinNoKhachHang` — Bearer + `{ maDViQLy, maKhachHang }`.
+ * Một lần POST `/api/TraCuu/GetListThongTinNoKhachHang`.
  */
-async function fetchPaymentUrlFromTracuuApi(args: {
+async function fetchPaymentUrlFromTracuuApiOnce(args: {
   accessToken: string;
   maDViQLy: string;
   maKhachHang: string;
@@ -191,18 +206,11 @@ async function fetchPaymentUrlFromTracuuApi(args: {
       return { ok: false, httpStatus, reason: msg, code: "API_BUSINESS_ERROR" };
     }
 
-    const data = root.data;
-    const list =
-      data !== null && typeof data === "object" && !Array.isArray(data)
-        ? extractDebtListVm(data)
-        : undefined;
+    const list = extractDebtListFromResponse(root);
 
     const paymentUrl = pickUrlThanhToan(list);
     if (!paymentUrl) {
       const empty = !Array.isArray(list) || list.length === 0;
-      logger.warn(
-        `[hanoi-online-payment] FAIL ma=${args.maKhachHang} maDViQLy=${args.maDViQLy} code=${empty ? "EMPTY_DEBT_LIST" : "NO_PAYMENT_URL"} HTTP ${httpStatus}`,
-      );
       return {
         ok: false,
         httpStatus,
@@ -230,6 +238,56 @@ async function fetchPaymentUrlFromTracuuApi(args: {
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * Gọi Tra cứu nợ + URL thanh toán; **retry** khi HTTP 200 nhưng list trống / thiếu URL (EVN đôi khi trả tạm rỗng khi gọi dày).
+ */
+async function fetchPaymentUrlFromTracuuApi(args: {
+  accessToken: string;
+  maDViQLy: string;
+  maKhachHang: string;
+  timeoutMs: number;
+}): Promise<
+  | { ok: true; paymentUrl: string; httpStatus: number }
+  | { ok: false; httpStatus: number; reason: string; bodyPreview?: string; code: HanoiOnlinePaymentLinkErrorCode }
+> {
+  const maxExtra = env.hanoiOnlinePaymentTracuuMaxRetries;
+  const totalAttempts = 1 + maxExtra;
+  const baseDelay = env.hanoiOnlinePaymentTracuuRetryDelayMs;
+  const preMs = env.hanoiOnlinePaymentTracuuPreDelayMs;
+  if (preMs > 0) {
+    logger.info(
+      `[hanoi-online-payment] Chờ ${preMs}ms trước Tra cứu nợ (tránh gọi API chồng khi phiên/web EVN HN còn tải) — ma=${args.maKhachHang}`,
+    );
+    await sleep(preMs);
+  }
+
+  let last: Awaited<ReturnType<typeof fetchPaymentUrlFromTracuuApiOnce>> | undefined;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+    last = await fetchPaymentUrlFromTracuuApiOnce(args);
+    if (last.ok) return last;
+
+    const retryable =
+      last.httpStatus === 200 &&
+      (last.code === "EMPTY_DEBT_LIST" || last.code === "NO_PAYMENT_URL");
+    if (!retryable || attempt >= totalAttempts) {
+      logger.warn(
+        `[hanoi-online-payment] FAIL ma=${args.maKhachHang} maDViQLy=${args.maDViQLy} code=${last.code} HTTP ${last.httpStatus} (sau ${attempt} lần gọi)`,
+      );
+      return last;
+    }
+
+    const jitter = Math.floor(Math.random() * 450);
+    const wait = baseDelay * attempt + jitter;
+    logger.info(
+      `[hanoi-online-payment] ${last.code} lần ${attempt}/${totalAttempts} — chờ ${wait}ms rồi gọi lại (thống nhất tham số; API đôi khi trả rỗng khi gọi liên tiếp)`,
+    );
+    await sleep(wait);
+  }
+
+  return last!;
 }
 
 /**
@@ -278,8 +336,5 @@ export async function fetchHanoiOnlinePaymentLink(
     };
   }
 
-  logger.warn(
-    `[hanoi-online-payment] FAIL ma=${ma} code=${r.code} http=${r.httpStatus} — ${r.reason.slice(0, 200)}`,
-  );
   return fail(r.code, r.reason, ma, { httpStatus: r.httpStatus, bodyPreview: r.bodyPreview });
 }
