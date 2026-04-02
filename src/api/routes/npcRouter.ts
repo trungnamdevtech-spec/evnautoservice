@@ -13,6 +13,7 @@ import { decryptNpcPassword } from "../../services/crypto/npcCredentials.js";
 import { AnticaptchaClient } from "../../services/captcha/AnticaptchaClient.js";
 import { EVNNPCWorker } from "../../providers/npc/EVNNPCWorker.js";
 import { runNpcOnlinePaymentLinkWithPlaywright } from "../../services/npc/npcOnlinePaymentLinkSession.js";
+import { normalizeNpcMaKhachHangInput } from "../../services/npc/npcMaKhachHangNormalize.js";
 
 const npcRepo = new NpcAccountRepository();
 
@@ -287,6 +288,7 @@ npcRouter.patch("/accounts/:id", async (c) => {
  * - `npcAccountId` (ObjectId hex), hoặc
  * - `npcAccountUsername` — MA_KH trùng field `username` trong `npc_accounts` (khớp `findByUsername`).
  * `maKhachHang?` — mã tra cứu trên trang thanh toán (khác với tài khoản đăng nhập); mặc định = username của tài khoản NPC. `username` alias của `maKhachHang` (form thanh toán).
+ * Chuỗi được chuẩn hóa: bỏ khoảng trắng thừa/NBSP, trích đúng một mã dạng `PA…`; từ chối số dạng chấm, hai mã PA khác nhau, hoặc không có PA hợp lệ (400 + `code`).
  * Tắt API: `NPC_ONLINE_PAYMENT_LINK_API_ENABLED=false`.
  */
 npcRouter.post("/online-payment-link", async (c) => {
@@ -322,12 +324,16 @@ npcRouter.post("/online-payment-link", async (c) => {
     );
   }
 
-  const maKhOpt =
+  const maKhOptRaw =
     typeof body.maKhachHang === "string"
-      ? body.maKhachHang.trim()
+      ? body.maKhachHang
       : typeof body.username === "string"
-        ? body.username.trim()
+        ? body.username
         : "";
+  const maKhOptTrimmed = maKhOptRaw
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u2000-\u200B\uFEFF]/g, "")
+    .trim();
 
   const secret = env.npcCredentialsSecret.trim();
   if (!secret) {
@@ -369,7 +375,12 @@ npcRouter.post("/online-payment-link", async (c) => {
     );
   }
 
-  const maKhNormalized = (maKhOpt || account.username).trim().toUpperCase();
+  const resolvedMaSource = maKhOptTrimmed !== "" ? maKhOptRaw : account.username;
+  const maNorm = normalizeNpcMaKhachHangInput(resolvedMaSource);
+  if (!maNorm.ok) {
+    return c.json({ error: maNorm.message, code: maNorm.code }, 400);
+  }
+  const maKhNormalized = maNorm.ma;
 
   const syncRaw = body.sync;
   const syncRequested =

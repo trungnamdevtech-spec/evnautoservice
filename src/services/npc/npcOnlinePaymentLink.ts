@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { logger } from "../../core/logger.js";
 import { buildNpcXhrHeaders, npcHumanPause } from "./npcBrowserLikeHeaders.js";
 import { dismissNpcOverlayModalIfPresent } from "../../providers/npc/npcLogin.js";
+import { normalizeNpcMaKhachHangInput } from "./npcMaKhachHangNormalize.js";
 
 /** Kết quả lấy link cổng thanh toán apicskhthanhtoan (sau POST Tra cứu). */
 export type NpcOnlinePaymentLinkResult =
@@ -24,7 +25,8 @@ export type NpcOnlinePaymentLinkResult =
 export type NpcOnlinePaymentLinkErrorCode =
   | "HTTP_ERROR"
   | "NO_PAYMENT_LINK_IN_HTML"
-  | "EMPTY_RESPONSE";
+  | "EMPTY_RESPONSE"
+  | "INVALID_MA_KH";
 
 /**
  * Trích URL `https://apicskhthanhtoan.npc.com.vn/Home/ThanhToan?param=...` từ HTML fragment server trả về.
@@ -57,10 +59,11 @@ export async function fetchNpcOnlinePaymentLink(
   maKhachHang: string,
   step: number,
 ): Promise<NpcOnlinePaymentLinkResult> {
-  const ma = maKhachHang.trim().toUpperCase();
-  if (!ma) {
-    return fail("EMPTY_RESPONSE", "Thiếu mã khách hàng", "");
+  const maNorm = normalizeNpcMaKhachHangInput(maKhachHang);
+  if (!maNorm.ok) {
+    return fail("INVALID_MA_KH", maNorm.message, maKhachHang.trim().slice(0, 64) || "");
   }
+  const ma = maNorm.ma;
 
   const base = env.evnNpcBaseUrl.replace(/\/$/, "");
   const pagePath = env.evnNpcThanhToanTrucTuyenPath.replace(/^\//, "");

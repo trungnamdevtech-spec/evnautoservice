@@ -27,8 +27,9 @@ export async function runNpcOnlinePaymentLinkWithPlaywright(
   try {
     page = await ctx.newPage();
     await worker.prepareNpcIndexNpcSession(page, account, accountId, passwordPlain, traceId, step);
-    const ma = maKhachHang.trim().toUpperCase() || account.username.trim().toUpperCase();
-    const result = await fetchNpcOnlinePaymentLink(page, ma, step);
+    const raw = maKhachHang.replace(/\u00A0/g, " ").replace(/[\u2000-\u200B\uFEFF]/g, "").trim();
+    const resolved = raw !== "" ? maKhachHang : account.username;
+    const result = await fetchNpcOnlinePaymentLink(page, resolved, step);
     const storage = await page.context().storageState();
     await npcRepo.updateSession(accountId, JSON.stringify(storage), new Date());
     return result;
