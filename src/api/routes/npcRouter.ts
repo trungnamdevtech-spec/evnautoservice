@@ -293,7 +293,7 @@ npcRouter.patch("/accounts/:id", async (c) => {
  * - `npcAccountId` (ObjectId hex), hoặc
  * - `npcAccountUsername` — MA_KH trùng field `username` trong `npc_accounts` (khớp `findByUsername`).
  * `maKhachHang?` — mã tra cứu trên trang thanh toán (khác với tài khoản đăng nhập); mặc định = username của tài khoản NPC. `username` alias của `maKhachHang` (form thanh toán).
- * Chuỗi được chuẩn hóa: bỏ khoảng trắng thừa/NBSP, trích đúng một mã dạng `PA…`; từ chối số dạng chấm, hai mã PA khác nhau, hoặc không có PA hợp lệ (400 + `code`).
+ * Chuỗi được chuẩn hóa: bỏ khoảng trắng thừa/NBSP, trích một mã NPC (2–6 chữ + ≥6 chữ/số, vd. `PA…`, `PNGV…`); từ chối số dạng chấm, hai mã khác nhau, hoặc không có mã hợp lệ (400 + `code`).
  * Tắt API: `NPC_ONLINE_PAYMENT_LINK_API_ENABLED=false`.
  */
 npcRouter.post("/online-payment-link", async (c) => {

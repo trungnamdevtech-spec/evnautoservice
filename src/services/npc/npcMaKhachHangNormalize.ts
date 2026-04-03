@@ -1,8 +1,9 @@
 /**
- * Chuẩn hóa mã khách hàng NPC (CSKH) từ input người dùng / agent:
- * khoảng trắng thừa, ký tự Unicode, ghép mã + số tiền, nhiều mã PA trong một chuỗi.
+ * Chuẩn hóa mã khách hàng NPC (CSKH miền Bắc) từ input người dùng / agent:
+ * khoảng trắng thừa, ký tự Unicode, ghép mã + số tiền, nhiều mã trong một chuỗi.
  *
- * Định dạng tham chiếu: `PA` + ít nhất 6 ký tự chữ/số (vd. PA02HH0043104).
+ * **Không** giới hạn chỉ tiền tố `PA` — NPC có nhiều đơn vị: `PA…`, `PE…`, `PNGV…`, `PD…`, …
+ * Quy ước: **2–6 chữ cái Latin** + **ít nhất 6 ký tự chữ/số** (đủ dài để tránh khớp nhầm, tương đương quy tắc cũ với `PA` + 6).
  */
 
 export type NpcMaKhNormalizeResult =
@@ -15,15 +16,20 @@ export type NpcMaKhNormalizeErrorCode =
   | "VALIDATION_MA_KH_FORMAT"
   | "VALIDATION_MA_KH_DOTTED_NUMBER";
 
-/** PA + tối thiểu 6 ký tự (đủ phân biệt với mã quá ngắn / nhập nhầm). */
-const NPC_MA_KH_CORE = /\b(PA[A-Z0-9]{6,})\b/gi;
+/**
+ * Phần đầu: mã đơn vị / vùng NPC (2–6 chữ). Phần sau: ít nhất 6 ký tự chữ/số (vd. PNGV000020628, PA02HH0043104).
+ */
+const NPC_MA_PREFIX = "[A-Z]{2,6}";
+const NPC_MA_SUFFIX = "[A-Z0-9]{6,}";
+const NPC_MA_KH_CORE = new RegExp(`\\b(${NPC_MA_PREFIX}${NPC_MA_SUFFIX})\\b`, "gi");
+const NPC_MA_KH_SINGLE = new RegExp(`^${NPC_MA_PREFIX}${NPC_MA_SUFFIX}$`, "i");
 
-/** Số định danh dạng xxx.xxx.xxx — không phải MA_KH PA (thường gửi nhầm). */
+/** Số định danh dạng xxx.xxx.xxx — không phải MA_KH (thường gửi nhầm). */
 const DOTTED_NUMBER_ONLY = /^\d{1,3}(\.\d{3}){1,5}$/;
 
 /**
  * Gộp mọi khoảng trắng (space thường, NBSP, zero-width, ideographic space U+3000, …) rồi trim.
- * Dùng trước khi tra `npc_accounts` hoặc parse mã PA.
+ * Dùng trước khi tra `npc_accounts` hoặc parse mã KH.
  */
 export function normalizeNpcFieldWhitespace(input: string): string {
   let s = input.replace(/\u00A0/g, " ");
@@ -37,12 +43,15 @@ function normalizeUnicodeWhitespace(input: string): string {
   return normalizeNpcFieldWhitespace(input);
 }
 
+const FORMAT_HINT =
+  "Mã NPC miền Bắc thường bắt đầu bằng 2–6 chữ cái (vd. PA, PE, PNGV, …) rồi chữ/số — tối thiểu đủ dài (vd. PNGV000020628). Bỏ số tiền, ghi chú; chỉ gửi một mã.";
+
 /**
- * Trích đúng một mã NPC dạng PA… từ chuỗi có thể chứa số tiền, ghi chú, khoảng trắng thừa.
- * - Một mã PA duy nhất (có thể lặp lại giống hệt) → ok.
- * - Hai mã PA khác nhau → ambiguous.
- * - Chuỗi chỉ là số dạng chấm (vd. 139.092.077) → gợi ý dùng mã PA.
- * - Không có PA hợp lệ → lỗi định dạng.
+ * Trích đúng một mã NPC từ chuỗi có thể chứa số tiền, ghi chú, khoảng trắng thừa.
+ * - Một mã hợp lệ duy nhất (có thể lặp lại giống hệt) → ok.
+ * - Hai mã khác nhau → ambiguous.
+ * - Chuỗi chỉ là số dạng chấm (vd. 139.092.077) → gợi ý dùng mã KH.
+ * - Không có mã hợp lệ → lỗi định dạng.
  */
 export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResult {
   const s = normalizeUnicodeWhitespace(raw);
@@ -59,13 +68,13 @@ export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResul
       ok: false,
       code: "VALIDATION_MA_KH_DOTTED_NUMBER",
       message:
-        "Chuỗi giống số định danh dạng chấm (vd. xxx.xxx.xxx), không phải mã khách hàng NPC dạng PA (vd. PA02HH0043104). Chỉ gửi mã PA.",
+        "Chuỗi giống số định danh dạng chấm (vd. xxx.xxx.xxx), không phải mã khách hàng NPC. Chỉ gửi mã trên hóa đơn / CSKH (vd. PA…, PNGV…).",
     };
   }
 
-  /** Một mã PA thuần (không có khoảng trắng giữa các phần — tránh dính hai mã khi xóa space). */
+  /** Một mã thuần (không khoảng trắng giữa các phần — tránh dính hai mã khi xóa space). */
   const hasInternalWhitespace = /\s/.test(s);
-  if (!hasInternalWhitespace && /^PA[A-Z0-9]+$/i.test(s)) {
+  if (!hasInternalWhitespace && NPC_MA_KH_SINGLE.test(s)) {
     return { ok: true, ma: s.toUpperCase() };
   }
 
@@ -75,8 +84,7 @@ export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResul
     return {
       ok: false,
       code: "VALIDATION_MA_KH_FORMAT",
-      message:
-        "Không tìm thấy mã khách hàng NPC hợp lệ dạng PA… (chữ số sau PA, tối thiểu 6 ký tự). Bỏ số tiền, ghi chú; chỉ gửi một mã PA.",
+      message: `Không tìm thấy mã khách hàng NPC hợp lệ. ${FORMAT_HINT}`,
     };
   }
 
@@ -86,7 +94,7 @@ export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResul
       ok: false,
       code: "VALIDATION_MA_KH_AMBIGUOUS",
       message:
-        "Chuỗi chứa nhiều mã khách hàng PA khác nhau — chỉ gửi đúng một mã PA (không ghép nhiều mã hoặc mã + số tiền trong cùng trường).",
+        "Chuỗi chứa nhiều mã khách hàng NPC khác nhau — chỉ gửi đúng một mã (không ghép nhiều mã hoặc mã + số tiền trong cùng trường).",
     };
   }
 
@@ -95,12 +103,12 @@ export function normalizeNpcMaKhachHangInput(raw: string): NpcMaKhNormalizeResul
 
 /**
  * Chuẩn hóa username / MA_KH để tra DB (`findByUsername`, ensure-bill, query GET).
- * Trích một mã PA hợp lệ nếu có; không thì uppercase chuỗi đã bỏ khoảng trắng thừa.
+ * Trích một mã hợp lệ nếu có; không thì uppercase chuỗi đã bỏ khoảng trắng thừa.
  */
 export function normalizeNpcUsernameForLookup(raw: string): string {
   const s = normalizeNpcFieldWhitespace(raw);
   if (!s) return "";
-  const pa = normalizeNpcMaKhachHangInput(s);
-  if (pa.ok) return pa.ma;
+  const parsed = normalizeNpcMaKhachHangInput(s);
+  if (parsed.ok) return parsed.ma;
   return s.toUpperCase();
 }
