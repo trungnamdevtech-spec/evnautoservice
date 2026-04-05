@@ -29,6 +29,8 @@ services:
   app:
     build: .
     image: autocheckevn:latest
+    # Chờ worker dừng gọn (Playwright) trước khi Docker gửi SIGKILL — mặc định 10s thường quá ngắn.
+    stop_grace_period: 120s
     # Bind mount từ host có thể không map quyền ghi cho pwuser trong image Playwright.
     # Chạy root trong container để ghi được output/pdfs ổn định trên Docker Desktop.
     user: "0:0"

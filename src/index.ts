@@ -8,6 +8,7 @@ import { NpcAccountRepository } from "./db/npcAccountRepository.js";
 import { TaskRepository } from "./db/taskRepository.js";
 import { importNpcAccountsFromXlsxFile } from "./services/npc/npcAccountsXlsxImport.js";
 import { TaskRunner } from "./worker/TaskRunner.js";
+import { recoverStaleRunningTasks } from "./worker/recoverStaleRunningTasks.js";
 import { startApiServer } from "./api/server.js";
 
 async function maybeImportNpcAccountsFromXlsxOnStartup(): Promise<void> {
@@ -42,29 +43,37 @@ async function maybeImportNpcAccountsFromXlsxOnStartup(): Promise<void> {
 
 async function main(): Promise<void> {
   await getMongoDb();
+
+  const repo = new TaskRepository();
+  const n = await recoverStaleRunningTasks(repo);
+  if (n > 0) {
+    logger.info(`[startup] Đã recover ${n} task RUNNING → FAILED.`);
+  }
+
   await maybeImportNpcAccountsFromXlsxOnStartup();
 
   // Khởi động HTTP API server (non-blocking)
   startApiServer();
 
-  const repo = new TaskRepository();
   const runner = new TaskRunner(repo);
 
-  const shutdown = async (signal: string) => {
-    logger.info(`Nhận ${signal}, đang dừng worker...`);
+  const requestShutdown = (signal: string) => {
+    logger.info(`Nhận ${signal}, đang dừng worker (chờ task đang chạy xong)...`);
     runner.stop();
-    await closeMongo();
-    process.exit(0);
   };
 
-  process.once("SIGINT", () => void shutdown("SIGINT"));
-  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => requestShutdown("SIGINT"));
+  process.once("SIGTERM", () => requestShutdown("SIGTERM"));
 
   logger.info(
     `EVN Worker + API — MongoDB db="${env.mongodbDb}", LOG_LEVEL=${env.logLevel}. ` +
       `Scraper chạy khi có task PENDING (EVN_CPC hoặc EVN_NPC).`,
   );
   await runner.startLoop();
+
+  logger.info("[shutdown] Vòng worker đã kết thúc, đóng MongoDB...");
+  await closeMongo();
+  process.exit(0);
 }
 
 main().catch((err) => {

@@ -53,10 +53,22 @@ export class TaskRunner {
       }
 
       if (this.stopped) break;
-      await new Promise((r) => setTimeout(r, env.taskPollIntervalMs));
+      await this.sleepPollIntervalOrUntilStopped();
     }
 
     await this.evnWorker.disposeBrowser();
+  }
+
+  /** Chờ giữa các vòng poll; ngắt sớm khi `stop()` để shutdown không chờ hết 5s. */
+  private async sleepPollIntervalOrUntilStopped(): Promise<void> {
+    const total = env.taskPollIntervalMs;
+    const chunk = 400;
+    let elapsed = 0;
+    while (elapsed < total && !this.stopped) {
+      const step = Math.min(chunk, total - elapsed);
+      await new Promise<void>((r) => setTimeout(r, step));
+      elapsed += step;
+    }
   }
 
   stop(): void {

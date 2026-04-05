@@ -26,6 +26,11 @@ export const env = {
   mongodbDb: process.env.MONGODB_DB ?? "evn_scraper",
   workerConcurrency: parseIntSafe(process.env.WORKER_CONCURRENCY, 3),
   taskPollIntervalMs: parseIntSafe(process.env.TASK_POLL_INTERVAL_MS, 5000),
+  /**
+   * Khởi động: đánh dấu FAILED mọi task đang `RUNNING` (sót sau crash / SIGKILL giữa chừng).
+   * Tắt (`false`) nếu chạy **nhiều replica worker** cùng một DB — có thể fail nhầm task đang xử lý ở instance khác.
+   */
+  taskFailRunningOnStartup: parseBoolSafe(process.env.TASK_FAIL_RUNNING_ON_STARTUP, true),
   playwrightHeadless: process.env.PLAYWRIGHT_HEADLESS !== "false",
   /** Trước khi đóng page/context: chờ N ms (0 = đóng ngay). Hữu ích khi PLAYWRIGHT_HEADLESS=false để theo dõi. */
   playwrightPauseBeforeCloseMs: parseIntSafe(

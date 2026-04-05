@@ -212,6 +212,12 @@ export class TaskRepository {
       .toArray();
   }
 
+  /** Mọi task đang RUNNING — dùng khi khởi động để dọn trạng thái kẹt sau restart. */
+  async findAllRunning(): Promise<ScrapeTask[]> {
+    const c = await this.col();
+    return c.find({ status: "RUNNING" }).sort({ updatedAt: 1 }).toArray();
+  }
+
   /** Đếm tasks theo status */
   async countByStatus(): Promise<Record<TaskStatus, number>> {
     const c = await this.col();
