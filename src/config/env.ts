@@ -145,7 +145,10 @@ export const env = {
    * 0 = tắt.
    */
   npcCaptchaImageMinHeightPx: Math.max(0, parseIntSafe(process.env.NPC_CAPTCHA_IMAGE_MIN_HEIGHT_PX, 96)),
-  /** Timeout mỗi bước Playwright NPC (goto, probe) — máy chủ mạng chậm nên tăng (ms). */
+  /**
+   * Timeout mỗi bước Playwright NPC (goto từng trang, captcha, …). Link thanh toán cũng dùng chung —
+   * nếu đặt thấp (vd. 45000) mà `npc:probeSession` chậm sẽ fail trước khi tới bước lấy link. Khuyến nghị ≥90000 trên server.
+   */
   npcStepTimeoutMs: Math.max(15_000, parseIntSafe(process.env.NPC_STEP_TIMEOUT_MS, 90_000)),
   /** GET TraCuuHDSPC: retry khi 403/429/502 (WAF tạm chặn). 0 = không retry. */
   npcTraCuuMaxRetries: Math.min(5, Math.max(0, parseIntSafe(process.env.NPC_TRACUU_MAX_RETRIES, 2))),

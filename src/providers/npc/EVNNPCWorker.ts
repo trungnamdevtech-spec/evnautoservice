@@ -47,9 +47,29 @@ export class EVNNPCWorker extends BaseWorker {
     const trace = (phase: string, detail?: string) => logTaskPhase(traceTaskId, phase, detail);
     trace("NPC_ACCOUNT", account.username);
 
-    await this.runStep("npc:probeSession", step, async () => {
-      await page.goto(env.evnNpcIndexNpcUrl, { waitUntil: "domcontentloaded", timeout: step });
-      await new Promise<void>((r) => setTimeout(r, 500));
+    /**
+     * Bước đầu: mở IndexNPC để probe session. Trang NPC đôi khi chậm / WAF — cho phép 2 lần `goto`
+     * trong một `runStep` với budget > `step` (mặc định `NPC_STEP_TIMEOUT_MS` trên server thường 45–90s).
+     */
+    const probeSessionBudgetMs = Math.min(step * 2 + 12_000, 200_000);
+    await this.runStep("npc:probeSession", probeSessionBudgetMs, async () => {
+      const gotoIndexOnce = async () => {
+        await page.goto(env.evnNpcIndexNpcUrl, { waitUntil: "domcontentloaded", timeout: step });
+        await new Promise<void>((r) => setTimeout(r, 500));
+      };
+      try {
+        await gotoIndexOnce();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const retryable =
+          /timeout|timed out|Navigation|net::ERR_|NS_ERROR|Target page|closed/i.test(msg);
+        if (!retryable) throw err;
+        logger.warn(
+          `[task ${traceTaskId}] npc:probeSession — lần 1 lỗi (${msg.slice(0, 200)}), chờ 2s rồi thử lại...`,
+        );
+        await new Promise<void>((r) => setTimeout(r, 2000));
+        await gotoIndexOnce();
+      }
     });
 
     await this.runStep("npc:dismissModalAfterProbe", step, async () => {
